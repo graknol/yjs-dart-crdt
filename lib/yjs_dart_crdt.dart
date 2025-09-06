@@ -5,10 +5,5 @@
 library yjs_dart_crdt;
 
 // Core exports
-export 'src/structs.dart' show Doc, Transaction, AbstractType;
+export 'src/crdt_types.dart' show Doc, Transaction, AbstractType, YMap, YArray, YText;
 export 'src/id.dart' show ID, createID;
-
-// CRDT types
-export 'src/y_map.dart';
-export 'src/y_array.dart';
-export 'src/y_text.dart';

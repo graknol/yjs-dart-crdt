@@ -202,6 +202,7 @@ class Transaction {
   final Doc doc;
   final bool local;
   final Map<int, int> _deleteSet = {};
+  final List<Map<String, dynamic>> _operations = [];
 
   Transaction(this.doc, {this.local = true});
 
@@ -209,6 +210,19 @@ class Transaction {
     // Simplified - in full Y.js this uses a more complex structure
     _deleteSet[client] = (_deleteSet[client] ?? 0) + len;
   }
+  
+  /// Track an operation during this transaction
+  void trackOperation(String type, Map<String, dynamic> data) {
+    _operations.add({
+      'type': type,
+      'data': data,
+      'clientID': doc.clientID,
+      'clock': doc._clock, // Use current clock value, will be incremented when transaction completes
+    });
+  }
+  
+  /// Get all operations tracked in this transaction
+  List<Map<String, dynamic>> getOperations() => List.from(_operations);
 }
 
 /// Document that contains CRDT types
@@ -313,6 +327,23 @@ class Doc {
   void transact(void Function(Transaction) fn, {bool local = true}) {
     final transaction = Transaction(this, local: local);
     fn(transaction);
+    
+    // Process tracked operations from the transaction
+    for (final opData in transaction.getOperations()) {
+      nextClock(); // Increment clock for each operation
+      final op = _Operation(
+        clientID: opData['clientID'] as int,
+        clock: _clock, // Use the incremented clock value
+        type: opData['type'] as String,
+        data: opData['data'] as Map<String, dynamic>,
+      );
+      _operationHistory.add(op);
+      
+      // Trim history if needed
+      if (_operationHistory.length > _maxHistorySize) {
+        _operationHistory.removeRange(0, _operationHistory.length - _maxHistorySize);
+      }
+    }
   }
 
   /// Serialize the entire document state to JSON
@@ -626,6 +657,62 @@ class Doc {
         }
         break;
         
+      case 'map_set':
+        final targetKey = operation.data['target'] as String;
+        final key = operation.data['key'] as String;
+        final value = operation.data['value'];
+        final valueType = operation.data['value_type'] as String;
+        
+        // Find the target map in shared types
+        for (final entry in _share.entries) {
+          if (entry.value is YMap) {
+            final map = entry.value as YMap;
+            
+            // Reconstruct the value based on its type
+            dynamic reconstructedValue;
+            switch (valueType) {
+              case 'GCounter':
+                if (value is Map<String, dynamic> && value['state'] != null) {
+                  final state = value['state'] as Map<String, dynamic>;
+                  final counterState = state.map((k, v) => MapEntry(int.parse(k), v as int));
+                  reconstructedValue = GCounter(counterState);
+                } else {
+                  reconstructedValue = GCounter();
+                }
+                break;
+              case 'PNCounter':
+                if (value is Map<String, dynamic>) {
+                  final positive = value['positive'] as Map<String, dynamic>?;
+                  final negative = value['negative'] as Map<String, dynamic>?;
+                  
+                  Map<int, int>? positiveState;
+                  Map<int, int>? negativeState;
+                  
+                  if (positive != null) {
+                    positiveState = positive.map((k, v) => MapEntry(int.parse(k), v as int));
+                  }
+                  if (negative != null) {
+                    negativeState = negative.map((k, v) => MapEntry(int.parse(k), v as int));
+                  }
+                  
+                  reconstructedValue = PNCounter(positiveState, negativeState);
+                } else {
+                  reconstructedValue = PNCounter();
+                }
+                break;
+              default:
+                // For primitive types and other types
+                reconstructedValue = value;
+            }
+            
+            // Apply the set operation directly to the map's internal structure
+            // without going through the normal set method to avoid double tracking
+            map._directSet(key, reconstructedValue);
+            break;
+          }
+        }
+        break;
+        
       default:
         // Handle other operation types as they are implemented
         break;
@@ -766,12 +853,29 @@ class YMap extends AbstractType {
 
   /// Get all entries as key-value pairs
   Iterable<MapEntry<String, dynamic>> get entries {
-    return _map.entries
+    final crdtEntries = _map.entries
         .where((entry) => !entry.value.deleted)
         .map((entry) => MapEntry(
               entry.key,
               entry.value.content.getContent().last,
             ));
+    
+    final simpleEntries = _simpleMap?.entries ?? <MapEntry<String, dynamic>>[];
+    
+    // Combine both sources, with CRDT entries taking precedence
+    final Map<String, dynamic> combined = {};
+    
+    // Add simple map entries first
+    for (final entry in simpleEntries) {
+      combined[entry.key] = entry.value;
+    }
+    
+    // Add CRDT entries (these override simple map entries if keys conflict)
+    for (final entry in crdtEntries) {
+      combined[entry.key] = entry.value;
+    }
+    
+    return combined.entries;
   }
 
   /// Clear all entries
@@ -811,6 +915,14 @@ class YMap extends AbstractType {
   void _typeMapSet(Transaction transaction, String key, dynamic value) {
     final left = _map[key];
     final doc = transaction.doc;
+    
+    // Track this operation for delta synchronization
+    transaction.trackOperation('map_set', {
+      'target': 'map',
+      'key': key,
+      'value': value is AbstractType ? value.toJSON() : value,
+      'value_type': value.runtimeType.toString(),
+    });
     
     AbstractContent content;
     if (value == null ||
@@ -861,6 +973,40 @@ class YMap extends AbstractType {
     if (item != null) {
       item.delete(transaction);
     }
+  }
+  
+  /// Direct set method for applying operations without tracking them again
+  void _directSet(String key, dynamic value) {
+    // This is a simplified direct set that bypasses transaction tracking
+    // Used when applying operations from remote sources
+    // In a full implementation, this would create proper CRDT items
+    
+    // For now, we'll use a simple approach for testing
+    // This should be enhanced to properly handle CRDT items
+    if (value is AbstractType) {
+      value._integrate(doc!);
+    }
+    
+    // Store in a simple way for testing - this should be enhanced
+    // to create proper Item structures
+    _simpleMap ??= <String, dynamic>{};
+    _simpleMap![key] = value;
+  }
+  
+  /// Simple map for direct operations - this is a temporary solution
+  Map<String, dynamic>? _simpleMap;
+  
+  /// Enhanced get method that checks both CRDT items and simple map
+  @override
+  T? get<T>(String key) {
+    // First try the CRDT structure
+    final crdtResult = _typeMapGet(key);
+    if (crdtResult != null) {
+      return crdtResult as T?;
+    }
+    
+    // Then try the simple map (for remotely applied operations)
+    return _simpleMap?[key] as T?;
   }
 }
 
@@ -1202,6 +1348,13 @@ class YText extends AbstractType {
     if (index > length) {
       throw RangeError('Index $index out of range (0-$length)');
     }
+
+    // Track this operation for delta synchronization
+    transaction.trackOperation('text_insert', {
+      'target': 'text',
+      'index': index,
+      'text': text,
+    });
 
     // Find position to insert
     final position = _findPosition(index);

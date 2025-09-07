@@ -55,7 +55,7 @@ class BinaryEncoder {
     final clock = reader.readInt32();
     
     final doc = Doc(clientID: clientID);
-    doc._clock = clock;
+    doc.setClock(clock);
     
     // Read shared types
     final sharedCount = reader.readInt32();

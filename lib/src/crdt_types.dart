@@ -196,6 +196,9 @@ class Doc {
   /// Increment and return the next clock value
   int nextClock() => ++_clock;
 
+  /// Set the clock value (used during deserialization)
+  void setClock(int clock) => _clock = clock;
+
   /// Get a shared type by key
   T? get<T>(String key) => _share[key] as T?;
 
@@ -247,7 +250,7 @@ class Doc {
     final clock = json['clock'] as int? ?? 0;
     
     final doc = Doc(clientID: clientID);
-    doc._clock = clock;
+    doc.setClock(clock);
     
     final shared = json['shared'] as Map<String, dynamic>? ?? {};
     

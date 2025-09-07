@@ -2,6 +2,43 @@ import 'id.dart';
 import 'content.dart';
 import 'counters.dart';
 
+/// Represents an operation in the CRDT history for delta synchronization
+class _Operation {
+  final int clientID;
+  final int clock;
+  final String type;
+  final Map<String, dynamic> data;
+  final DateTime timestamp;
+
+  _Operation({
+    required this.clientID,
+    required this.clock,
+    required this.type,
+    required this.data,
+  }) : timestamp = DateTime.now();
+
+  Map<String, dynamic> toJSON() {
+    return {
+      'clientID': clientID,
+      'clock': clock,
+      'type': type,
+      'data': data,
+      'timestamp': timestamp.toIso8601String(),
+    };
+  }
+
+  static _Operation fromJSON(Map<String, dynamic> json) {
+    final op = _Operation(
+      clientID: json['clientID'] as int,
+      clock: json['clock'] as int,
+      type: json['type'] as String,
+      data: json['data'] as Map<String, dynamic>,
+    );
+    // Note: timestamp will be current time, not original time
+    return op;
+  }
+}
+
 /// Abstract base class for all structs (Items and GC)
 abstract class AbstractStruct {
   final ID id;
@@ -179,8 +216,19 @@ class Doc {
   final int clientID;
   final Map<String, dynamic> _share = {};
   int _clock = 0;
+  
+  /// Vector clock state representing the known state from each client
+  final Map<int, int> _vectorClock = {};
+  
+  /// Operation history for delta synchronization
+  final List<_Operation> _operationHistory = [];
+  
+  /// Maximum number of operations to keep in history
+  static const int _maxHistorySize = 1000;
 
-  Doc({int? clientID}) : clientID = clientID ?? _generateClientID();
+  Doc({int? clientID}) : clientID = clientID ?? _generateClientID() {
+    _vectorClock[this.clientID] = 0;
+  }
 
   /// Get a copy of the shared types (for serialization)
   Map<String, dynamic> get sharedTypes => Map.from(_share);
@@ -194,7 +242,53 @@ class Doc {
   int getState() => _clock;
 
   /// Increment and return the next clock value
-  int nextClock() => ++_clock;
+  int nextClock() {
+    _clock++;
+    _vectorClock[clientID] = _clock;
+    return _clock;
+  }
+  
+  /// Get a copy of the current vector clock
+  Map<int, int> getVectorClock() => Map.from(_vectorClock);
+  
+  /// Update vector clock with information from another client
+  void updateVectorClock(int otherClientID, int otherClock) {
+    final currentClock = _vectorClock[otherClientID] ?? 0;
+    if (otherClock > currentClock) {
+      _vectorClock[otherClientID] = otherClock;
+    }
+  }
+  
+  /// Compare vector clocks to determine if we need updates from a remote state
+  bool _needsUpdateFromState(Map<int, int> remoteState) {
+    for (final entry in remoteState.entries) {
+      final clientId = entry.key;
+      final remoteClock = entry.value;
+      final localClock = _vectorClock[clientId] ?? 0;
+      
+      if (remoteClock > localClock) {
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  /// Add an operation to the history
+  void _addOperation(String type, Map<String, dynamic> data) {
+    final op = _Operation(
+      clientID: clientID,
+      clock: _clock,
+      type: type,
+      data: data,
+    );
+    
+    _operationHistory.add(op);
+    
+    // Trim history if it gets too large
+    if (_operationHistory.length > _maxHistorySize) {
+      _operationHistory.removeRange(0, _operationHistory.length - _maxHistorySize);
+    }
+  }
 
   /// Get a shared type by key
   T? get<T>(String key) => _share[key] as T?;
@@ -205,6 +299,13 @@ class Doc {
     if (type is AbstractType) {
       type._integrate(this);
     }
+    
+    // Track this as an operation for delta synchronization
+    _addOperation('share', {
+      'key': key,
+      'type': type.runtimeType.toString(),
+      'data': type is AbstractType ? type.toJSON() : type,
+    });
   }
 
   /// Execute a transaction
@@ -296,42 +397,290 @@ class Doc {
   }
 
   /// Get an update/delta representing all changes since a given state
-  /// This is a simplified version - full Yjs has more complex update encoding
+  /// This implementation computes minimal deltas based on vector clocks
   Map<String, dynamic> getUpdateSince(Map<int, int> remoteState) {
-    // Simplified: return full state for now
-    // In full implementation, this would compute minimal delta
+    final List<Map<String, dynamic>> operations = [];
+    final Map<int, int> currentVector = getVectorClock();
+    
+    // Find operations that the remote client hasn't seen
+    for (final operation in _operationHistory) {
+      final opClientId = operation.clientID;
+      final opClock = operation.clock;
+      final remoteClientClock = remoteState[opClientId] ?? 0;
+      
+      // Include this operation if remote hasn't seen it
+      if (opClock > remoteClientClock) {
+        operations.add(operation.toJSON());
+      }
+    }
+    
+    // If we have operations to send, return delta update
+    if (operations.isNotEmpty) {
+      return {
+        'type': 'delta_update',
+        'operations': operations,
+        'vector_clock': currentVector,
+        'clientID': clientID,
+      };
+    }
+    
+    // If remote state indicates they need a full sync or we have no common history
+    bool needsFullSync = false;
+    for (final entry in remoteState.entries) {
+      final remoteClientId = entry.key;
+      final remoteClock = entry.value;
+      final localClock = currentVector[remoteClientId] ?? 0;
+      
+      // If they have changes we don't know about, or if we can't find
+      // the operations they need in our history, send full state
+      if (remoteClock > localClock || 
+          (remoteClock > 0 && _operationHistory.isEmpty)) {
+        needsFullSync = true;
+        break;
+      }
+    }
+    
+    if (needsFullSync) {
+      return {
+        'type': 'full_state',
+        'state': toJSON(),
+        'vector_clock': currentVector,
+        'clientID': clientID,
+      };
+    }
+    
+    // No changes to send
     return {
-      'type': 'full_state',
-      'state': toJSON(),
-      'vector_clock': {clientID.toString(): _clock},
+      'type': 'no_changes',
+      'vector_clock': currentVector,
+      'clientID': clientID,
     };
   }
 
   /// Apply an update/delta to this document
   void applyUpdate(Map<String, dynamic> update) {
     final updateType = update['type'] as String;
+    final updateVectorClock = update['vector_clock'] as Map<String, dynamic>?;
+    final updateClientID = update['clientID'] as int?;
     
-    if (updateType == 'full_state') {
-      final state = update['state'] as Map<String, dynamic>;
-      final otherDoc = Doc.fromJSON(state);
-      
-      // Merge the other document's state into this one
-      // This is a simplified merge - full implementation would be more complex
-      for (final entry in otherDoc._share.entries) {
-        final key = entry.key;
-        final value = entry.value;
+    // Update our vector clock with the sender's state
+    if (updateVectorClock != null) {
+      for (final entry in updateVectorClock.entries) {
+        final clientId = int.parse(entry.key);
+        final clock = entry.value as int;
+        updateVectorClock(clientId, clock);
+      }
+    }
+    
+    switch (updateType) {
+      case 'delta_update':
+        _applyDeltaUpdate(update);
+        break;
         
-        if (!_share.containsKey(key)) {
-          share(key, value);
-        } else {
-          // For now, just replace - full implementation would merge
-          share(key, value);
-        }
+      case 'full_state':
+        _applyFullStateUpdate(update);
+        break;
+        
+      case 'no_changes':
+        // Nothing to apply, just update vector clock (already done above)
+        break;
+        
+      default:
+        throw ArgumentError('Unknown update type: $updateType');
+    }
+  }
+  
+  /// Apply a delta update containing incremental operations
+  void _applyDeltaUpdate(Map<String, dynamic> update) {
+    final operations = update['operations'] as List<dynamic>;
+    
+    for (final opData in operations) {
+      final op = _Operation.fromJSON(opData as Map<String, dynamic>);
+      
+      // Skip operations we've already seen
+      final localClock = _vectorClock[op.clientID] ?? 0;
+      if (op.clock <= localClock) {
+        continue;
       }
       
-      // Update clock to maximum
-      _clock = (_clock > otherDoc._clock) ? _clock : otherDoc._clock;
+      // Apply the operation based on its type
+      _applyOperation(op);
+      
+      // Update our vector clock
+      updateVectorClock(op.clientID, op.clock);
+      
+      // Add to our operation history if it's not from us
+      if (op.clientID != clientID) {
+        _operationHistory.add(op);
+        
+        // Trim history if needed
+        if (_operationHistory.length > _maxHistorySize) {
+          _operationHistory.removeRange(0, _operationHistory.length - _maxHistorySize);
+        }
+      }
     }
+  }
+  
+  /// Apply a full state update (legacy compatibility)
+  void _applyFullStateUpdate(Map<String, dynamic> update) {
+    final state = update['state'] as Map<String, dynamic>;
+    final otherDoc = Doc.fromJSON(state);
+    
+    // Merge the other document's state into this one
+    for (final entry in otherDoc._share.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      
+      if (!_share.containsKey(key)) {
+        // Don't track this as an operation since it's a full state sync
+        _share[key] = value;
+        if (value is AbstractType) {
+          value._integrate(this);
+        }
+      } else {
+        // For now, just replace - full implementation would merge CRDT states
+        _share[key] = value;
+        if (value is AbstractType) {
+          value._integrate(this);
+        }
+      }
+    }
+    
+    // Update clock to maximum
+    _clock = (_clock > otherDoc._clock) ? _clock : otherDoc._clock;
+    _vectorClock[clientID] = _clock;
+  }
+  
+  /// Apply a specific operation to the document state
+  void _applyOperation(_Operation operation) {
+    switch (operation.type) {
+      case 'share':
+        final key = operation.data['key'] as String;
+        final typeStr = operation.data['type'] as String;
+        final data = operation.data['data'];
+        
+        // Reconstruct the shared object based on its type
+        dynamic value;
+        switch (typeStr) {
+          case 'YMap':
+            value = YMap();
+            if (data is Map<String, dynamic>) {
+              for (final entry in data.entries) {
+                (value as YMap).set(entry.key, entry.value);
+              }
+            }
+            break;
+          case 'YArray':
+            value = YArray<dynamic>();
+            if (data is List) {
+              for (final item in data) {
+                (value as YArray).push(item);
+              }
+            }
+            break;
+          case 'YText':
+            value = YText();
+            if (data is String) {
+              (value as YText).insert(0, data);
+            }
+            break;
+          case 'GCounter':
+            if (data is Map<String, dynamic> && data['state'] != null) {
+              final state = data['state'] as Map<String, dynamic>;
+              final counterState = state.map((k, v) => MapEntry(int.parse(k), v as int));
+              value = GCounter(counterState);
+            } else {
+              value = GCounter();
+            }
+            break;
+          case 'PNCounter':
+            if (data is Map<String, dynamic>) {
+              final positive = data['positive'] as Map<String, dynamic>?;
+              final negative = data['negative'] as Map<String, dynamic>?;
+              
+              Map<int, int>? positiveState;
+              Map<int, int>? negativeState;
+              
+              if (positive != null) {
+                positiveState = positive.map((k, v) => MapEntry(int.parse(k), v as int));
+              }
+              if (negative != null) {
+                negativeState = negative.map((k, v) => MapEntry(int.parse(k), v as int));
+              }
+              
+              value = PNCounter(positiveState, negativeState);
+            } else {
+              value = PNCounter();
+            }
+            break;
+          default:
+            // For primitive types
+            value = data;
+        }
+        
+        // Apply the share operation without tracking it again
+        _share[key] = value;
+        if (value is AbstractType) {
+          value._integrate(this);
+        }
+        break;
+        
+      default:
+        // Handle other operation types as they are implemented
+        break;
+    }
+  }
+  
+  /// Create a snapshot of the current document state
+  /// This can be used as a checkpoint for delta synchronization
+  Map<String, dynamic> createSnapshot() {
+    return {
+      'type': 'snapshot',
+      'state': toJSON(),
+      'vector_clock': getVectorClock(),
+      'timestamp': DateTime.now().toIso8601String(),
+      'clientID': clientID,
+    };
+  }
+  
+  /// Get updates since a specific snapshot
+  Map<String, dynamic> getUpdateSinceSnapshot(Map<String, dynamic> snapshot) {
+    if (snapshot['type'] != 'snapshot') {
+      throw ArgumentError('Invalid snapshot format');
+    }
+    
+    final snapshotVectorClock = snapshot['vector_clock'] as Map<String, dynamic>;
+    final remoteState = snapshotVectorClock.map((k, v) => MapEntry(int.parse(k), v as int));
+    
+    return getUpdateSince(remoteState);
+  }
+  
+  /// Check if this document has unseen changes compared to a remote state
+  bool hasChangesSince(Map<int, int> remoteState) {
+    final currentVector = getVectorClock();
+    
+    for (final entry in currentVector.entries) {
+      final clientId = entry.key;
+      final localClock = entry.value;
+      final remoteClock = remoteState[clientId] ?? 0;
+      
+      if (localClock > remoteClock) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  /// Get a summary of the current synchronization state
+  Map<String, dynamic> getSyncState() {
+    return {
+      'clientID': clientID,
+      'clock': _clock,
+      'vector_clock': getVectorClock(),
+      'operation_history_size': _operationHistory.length,
+      'shared_types': _share.keys.toList(),
+    };
   }
 }
 

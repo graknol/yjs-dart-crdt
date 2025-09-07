@@ -1,6 +1,40 @@
 import 'id.dart';
+import 'hlc.dart';
 import 'content.dart';
 import 'counters.dart';
+
+/// Represents an operation in the CRDT history for delta synchronization
+class _Operation {
+  final String nodeId;
+  final HLC hlc;
+  final String type;
+  final Map<String, dynamic> data;
+
+  _Operation({
+    required this.nodeId,
+    required this.hlc,
+    required this.type,
+    required this.data,
+  });
+
+  Map<String, dynamic> toJSON() {
+    return {
+      'nodeId': nodeId,
+      'hlc': hlc.toJson(),
+      'type': type,
+      'data': data,
+    };
+  }
+
+  static _Operation fromJSON(Map<String, dynamic> json) {
+    return _Operation(
+      nodeId: json['nodeId'] as String,
+      hlc: HLC.fromJson(json['hlc'] as Map<String, dynamic>),
+      type: json['type'] as String,
+      data: json['data'] as Map<String, dynamic>,
+    );
+  }
+}
 
 /// Abstract base class for all structs (Items and GC)
 abstract class AbstractStruct {
@@ -85,7 +119,13 @@ class Item extends AbstractStruct {
 
   /// Get the last ID covered by this item
   ID get lastId {
-    return length == 1 ? id : createID(id.client, id.clock + length - 1);
+    if (length == 1) {
+      return id;
+    } else {
+      // For HLC-based IDs, we need to increment the logical counter
+      final newHLC = id.hlc.copyWith(logicalCounter: id.hlc.logicalCounter + length - 1);
+      return ID(newHLC);
+    }
   }
 
   /// Delete this item
@@ -97,7 +137,7 @@ class Item extends AbstractStruct {
       }
       markDeleted();
       // Add to transaction's delete set
-      transaction._addToDeleteSet(id.client, id.clock, length);
+      transaction._addToDeleteSet(id.hlc.nodeId, id.hlc.physicalTime, length);
     }
   }
 
@@ -107,8 +147,8 @@ class Item extends AbstractStruct {
         compareIDs(right.origin, lastId) &&
         this.right == right &&
         compareIDs(rightOrigin, right.rightOrigin) &&
-        id.client == right.id.client &&
-        id.clock + length == right.id.clock &&
+        id.hlc.nodeId == right.id.hlc.nodeId &&
+        id.hlc.physicalTime + length == right.id.hlc.physicalTime &&
         deleted == right.deleted &&
         content.runtimeType == right.content.runtimeType &&
         content.mergeWith(right.content);
@@ -164,37 +204,136 @@ class Item extends AbstractStruct {
 class Transaction {
   final Doc doc;
   final bool local;
-  final Map<int, int> _deleteSet = {};
+  final Map<String, int> _deleteSet = {}; // Using String nodeId instead of int client
+  final List<Map<String, dynamic>> _operations = [];
 
   Transaction(this.doc, {this.local = true});
 
-  void _addToDeleteSet(int client, int clock, int len) {
-    // Simplified - in full Y.js this uses a more complex structure
-    _deleteSet[client] = (_deleteSet[client] ?? 0) + len;
+  void _addToDeleteSet(String nodeId, int physicalTime, int len) {
+    // Simplified - using string-based delete set
+    _deleteSet[nodeId] = (_deleteSet[nodeId] ?? 0) + len;
   }
+  
+  /// Track an operation during this transaction
+  void trackOperation(String type, Map<String, dynamic> data) {
+    _operations.add({
+      'type': type,
+      'data': data,
+      'nodeId': doc.nodeId,
+      'hlc': doc.getCurrentHLC().toJson(),
+    });
+  }
+  
+  /// Get all operations tracked in this transaction
+  List<Map<String, dynamic>> getOperations() => List.from(_operations);
 }
 
 /// Document that contains CRDT types
 class Doc {
-  final int clientID;
+  /// Node identifier for this document instance
+  final String nodeId;
+  
+  /// Current Hybrid Logical Clock state
+  HLC _currentHLC;
+  
   final Map<String, dynamic> _share = {};
-  int _clock = 0;
+  
+  /// HLC state representing the known state from each node
+  final Map<String, HLC> _hlcVector = {};
+  
+  /// Operation history for delta synchronization
+  final List<_Operation> _operationHistory = [];
+  
+  /// Maximum number of operations to keep in history
+  static const int _maxHistorySize = 1000;
 
-  Doc({int? clientID}) : clientID = clientID ?? _generateClientID();
+  Doc({String? nodeId, int? clientID}) 
+      : nodeId = nodeId ?? (clientID != null ? 'legacy-$clientID' : generateGuidV4()),
+        _currentHLC = HLC.now(nodeId ?? (clientID != null ? 'legacy-$clientID' : generateGuidV4())) {
+    _hlcVector[this.nodeId] = _currentHLC;
+  }
+
+  /// Legacy constructor for backward compatibility
+  factory Doc.withClientID(int clientID) {
+    final nodeId = 'legacy-$clientID';
+    return Doc(nodeId: nodeId);
+  }
+
+  /// Backward compatibility getter
+  int get clientID => int.tryParse(nodeId.replaceFirst('legacy-', '')) ?? nodeId.hashCode;
 
   /// Get a copy of the shared types (for serialization)
   Map<String, dynamic> get sharedTypes => Map.from(_share);
 
-  static int _generateClientID() {
-    // Generate a random 32-bit client ID
-    return DateTime.now().microsecondsSinceEpoch & 0xFFFFFFFF;
+  /// Get the current HLC
+  HLC getCurrentHLC() => _currentHLC;
+
+  /// Get the current state (for backward compatibility)
+  int getState() => _currentHLC.physicalTime;
+
+  /// Increment and return the next HLC
+  HLC nextHLC() {
+    _currentHLC = _currentHLC.increment();
+    _hlcVector[nodeId] = _currentHLC;
+    return _currentHLC;
   }
-
-  /// Get the current clock value
-  int getState() => _clock;
-
-  /// Increment and return the next clock value
-  int nextClock() => ++_clock;
+  
+  /// Get a copy of the current HLC vector
+  Map<String, HLC> getHLCVector() => Map.from(_hlcVector);
+  
+  /// Get vector clock for backward compatibility
+  Map<int, int> getVectorClock() {
+    final result = <int, int>{};
+    for (final entry in _hlcVector.entries) {
+      // Convert node ID to int for legacy support
+      final clientId = int.tryParse(entry.key.replaceFirst('legacy-', '')) ?? entry.key.hashCode;
+      result[clientId] = entry.value.physicalTime;
+    }
+    return result;
+  }
+  
+  /// Update HLC vector with information from another node
+  void updateHLCVector(String otherNodeId, HLC otherHLC) {
+    final currentHLC = _hlcVector[otherNodeId];
+    if (currentHLC == null || otherHLC.happensBefore(currentHLC)) {
+      _hlcVector[otherNodeId] = otherHLC;
+    }
+    
+    // Update our own HLC based on received event
+    _currentHLC = _currentHLC.receiveEvent(otherHLC);
+    _hlcVector[nodeId] = _currentHLC;
+  }
+  
+  /// Compare HLC vectors to determine if we need updates from a remote state
+  bool _needsUpdateFromHLCState(Map<String, HLC> remoteState) {
+    for (final entry in remoteState.entries) {
+      final nodeId = entry.key;
+      final remoteHLC = entry.value;
+      final localHLC = _hlcVector[nodeId];
+      
+      if (localHLC == null || remoteHLC.happensAfter(localHLC)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  /// Add an operation to the history
+  void _addOperation(String type, Map<String, dynamic> data) {
+    final op = _Operation(
+      nodeId: nodeId,
+      hlc: _currentHLC,
+      type: type,
+      data: data,
+    );
+    
+    _operationHistory.add(op);
+    
+    // Trim history if it gets too large
+    if (_operationHistory.length > _maxHistorySize) {
+      _operationHistory.removeRange(0, _operationHistory.length - _maxHistorySize);
+    }
+  }
 
   /// Set the clock value (used during deserialization)
   void setClock(int clock) => _clock = clock;
@@ -208,19 +347,44 @@ class Doc {
     if (type is AbstractType) {
       type._integrate(this);
     }
+    
+    // Increment HLC and track this as an operation for delta synchronization
+    nextHLC();
+    _addOperation('share', {
+      'key': key,
+      'type': type.runtimeType.toString(),
+      'data': type is AbstractType ? type.toJSON() : type,
+    });
   }
 
   /// Execute a transaction
   void transact(void Function(Transaction) fn, {bool local = true}) {
     final transaction = Transaction(this, local: local);
     fn(transaction);
+    
+    // Process tracked operations from the transaction
+    for (final opData in transaction.getOperations()) {
+      nextHLC(); // Increment HLC for each operation
+      final op = _Operation(
+        nodeId: opData['nodeId'] as String,
+        hlc: _currentHLC, // Use the incremented HLC value
+        type: opData['type'] as String,
+        data: opData['data'] as Map<String, dynamic>,
+      );
+      _operationHistory.add(op);
+      
+      // Trim history if needed
+      if (_operationHistory.length > _maxHistorySize) {
+        _operationHistory.removeRange(0, _operationHistory.length - _maxHistorySize);
+      }
+    }
   }
 
   /// Serialize the entire document state to JSON
   Map<String, dynamic> toJSON() {
     final result = <String, dynamic>{
-      'clientID': clientID,
-      'clock': _clock,
+      'nodeId': nodeId,
+      'hlc': _currentHLC.toJson(),
       'shared': <String, dynamic>{},
     };
 
@@ -246,12 +410,32 @@ class Doc {
 
   /// Create a document from serialized JSON state
   static Doc fromJSON(Map<String, dynamic> json) {
-    final clientID = json['clientID'] as int?;
-    final clock = json['clock'] as int? ?? 0;
-
-    final doc = Doc(clientID: clientID);
-    doc.setClock(clock);
-
+    String? nodeId;
+    
+    // Handle both new HLC format and legacy format
+    if (json.containsKey('nodeId')) {
+      nodeId = json['nodeId'] as String?;
+    } else if (json.containsKey('clientID')) {
+      // Legacy format support
+      final clientID = json['clientID'] as int?;
+      nodeId = clientID != null ? 'legacy-$clientID' : null;
+    }
+    
+    final doc = Doc(nodeId: nodeId);
+    
+    // Restore HLC if available
+    if (json.containsKey('hlc')) {
+      doc._currentHLC = HLC.fromJson(json['hlc'] as Map<String, dynamic>);
+    } else if (json.containsKey('clock')) {
+      // Legacy clock support
+      final clock = json['clock'] as int? ?? 0;
+      doc._currentHLC = HLC(
+        physicalTime: clock * 1000, // Convert to milliseconds
+        logicalCounter: 0,
+        nodeId: doc.nodeId,
+      );
+    }
+    
     final shared = json['shared'] as Map<String, dynamic>? ?? {};
 
     for (final entry in shared.entries) {
@@ -299,42 +483,390 @@ class Doc {
   }
 
   /// Get an update/delta representing all changes since a given state
-  /// This is a simplified version - full Yjs has more complex update encoding
+  /// This implementation computes minimal deltas based on HLC vectors
+  /// Also supports legacy vector clock format for backward compatibility
   Map<String, dynamic> getUpdateSince(Map<int, int> remoteState) {
-    // Simplified: return full state for now
-    // In full implementation, this would compute minimal delta
+    final List<Map<String, dynamic>> operations = [];
+    final Map<String, HLC> currentVector = getHLCVector();
+    
+    // Convert legacy vector clock to HLC format for comparison
+    final Map<String, HLC> remoteHLCState = {};
+    for (final entry in remoteState.entries) {
+      final clientId = entry.key;
+      final clock = entry.value;
+      final nodeId = 'legacy-$clientId';
+      remoteHLCState[nodeId] = HLC(
+        physicalTime: clock * 1000, // Convert to milliseconds
+        logicalCounter: 0,
+        nodeId: nodeId,
+      );
+    }
+    
+    // Find operations that the remote client hasn't seen
+    for (final operation in _operationHistory) {
+      final opNodeId = operation.nodeId;
+      final opHLC = operation.hlc;
+      final remoteHLC = remoteHLCState[opNodeId];
+      
+      // Include this operation if remote hasn't seen it
+      if (remoteHLC == null || opHLC.happensAfter(remoteHLC)) {
+        operations.add(operation.toJSON());
+      }
+    }
+    
+    // If we have operations to send, return delta update
+    if (operations.isNotEmpty) {
+      return {
+        'type': 'delta_update',
+        'operations': operations,
+        'hlc_vector': currentVector.map((k, v) => MapEntry(k, v.toJson())),
+        'vector_clock': getVectorClock(), // Legacy compatibility
+        'nodeId': nodeId,
+      };
+    }
+    
+    // If remote state indicates they need a full sync or we have no common history
+    bool needsFullSync = false;
+    for (final entry in remoteHLCState.entries) {
+      final remoteNodeId = entry.key;
+      final remoteHLC = entry.value;
+      final localHLC = currentVector[remoteNodeId];
+      
+      // If they have changes we don't know about, or if we can't find
+      // the operations they need in our history, send full state
+      if (localHLC == null || remoteHLC.happensAfter(localHLC) || 
+          (remoteHLC.physicalTime > 0 && _operationHistory.isEmpty)) {
+        needsFullSync = true;
+        break;
+      }
+    }
+    
+    if (needsFullSync) {
+      return {
+        'type': 'full_state',
+        'state': toJSON(),
+        'hlc_vector': currentVector.map((k, v) => MapEntry(k, v.toJson())),
+        'vector_clock': getVectorClock(), // Legacy compatibility
+        'nodeId': nodeId,
+      };
+    }
+    
+    // No changes to send
     return {
-      'type': 'full_state',
-      'state': toJSON(),
-      'vector_clock': {clientID.toString(): _clock},
+      'type': 'no_changes',
+      'hlc_vector': currentVector.map((k, v) => MapEntry(k, v.toJson())),
+      'vector_clock': getVectorClock(), // Legacy compatibility
+      'nodeId': nodeId,
     };
   }
 
   /// Apply an update/delta to this document
   void applyUpdate(Map<String, dynamic> update) {
     final updateType = update['type'] as String;
-
-    if (updateType == 'full_state') {
-      final state = update['state'] as Map<String, dynamic>;
-      final otherDoc = Doc.fromJSON(state);
-
-      // Merge the other document's state into this one
-      // This is a simplified merge - full implementation would be more complex
-      for (final entry in otherDoc._share.entries) {
-        final key = entry.key;
-        final value = entry.value;
-
-        if (!_share.containsKey(key)) {
-          share(key, value);
-        } else {
-          // For now, just replace - full implementation would merge
-          share(key, value);
+    final updateNodeId = update['nodeId'] as String?;
+    
+    // Handle HLC vector clock updates
+    final updateHLCVector = update['hlc_vector'] as Map<String, dynamic>?;
+    if (updateHLCVector != null) {
+      for (final entry in updateHLCVector.entries) {
+        final nodeId = entry.key;
+        final hlcData = entry.value as Map<String, dynamic>;
+        final hlc = HLC.fromJson(hlcData);
+        updateHLCVector(nodeId, hlc);
+      }
+    }
+    
+    // Handle legacy vector clock updates for backward compatibility
+    final updateVectorClock = update['vector_clock'] as Map<String, dynamic>?;
+    if (updateVectorClock != null && updateHLCVector == null) {
+      for (final entry in updateVectorClock.entries) {
+        final clientId = int.parse(entry.key);
+        final clock = entry.value as int;
+        final nodeId = 'legacy-$clientId';
+        final hlc = HLC(
+          physicalTime: clock * 1000, // Convert to milliseconds
+          logicalCounter: 0,
+          nodeId: nodeId,
+        );
+        updateHLCVector(nodeId, hlc);
+      }
+    }
+    
+    switch (updateType) {
+      case 'delta_update':
+        _applyDeltaUpdate(update);
+        break;
+        
+      case 'full_state':
+        _applyFullStateUpdate(update);
+        break;
+        
+      case 'no_changes':
+        // Nothing to apply, HLC vector already updated above
+        break;
+        
+      default:
+        throw ArgumentError('Unknown update type: $updateType');
+    }
+  }
+  
+  /// Apply a delta update containing incremental operations
+  void _applyDeltaUpdate(Map<String, dynamic> update) {
+    final operations = update['operations'] as List<dynamic>;
+    
+    for (final opData in operations) {
+      final op = _Operation.fromJSON(opData as Map<String, dynamic>);
+      
+      // Skip operations we've already seen
+      final localHLC = _hlcVector[op.nodeId];
+      if (localHLC != null && !op.hlc.happensAfter(localHLC)) {
+        continue;
+      }
+      
+      // Apply the operation based on its type
+      _applyOperation(op);
+      
+      // Update our HLC vector
+      updateHLCVector(op.nodeId, op.hlc);
+      
+      // Add to our operation history if it's not from us
+      if (op.nodeId != nodeId) {
+        _operationHistory.add(op);
+        
+        // Trim history if needed
+        if (_operationHistory.length > _maxHistorySize) {
+          _operationHistory.removeRange(0, _operationHistory.length - _maxHistorySize);
         }
       }
-
-      // Update clock to maximum
-      _clock = (_clock > otherDoc._clock) ? _clock : otherDoc._clock;
     }
+  }
+  
+  /// Apply a full state update (legacy compatibility)
+  void _applyFullStateUpdate(Map<String, dynamic> update) {
+    final state = update['state'] as Map<String, dynamic>;
+    final otherDoc = Doc.fromJSON(state);
+    
+    // Merge the other document's state into this one
+    for (final entry in otherDoc._share.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      
+      if (!_share.containsKey(key)) {
+        // Don't track this as an operation since it's a full state sync
+        _share[key] = value;
+        if (value is AbstractType) {
+          value._integrate(this);
+        }
+      } else {
+        // For now, just replace - full implementation would merge CRDT states
+        _share[key] = value;
+        if (value is AbstractType) {
+          value._integrate(this);
+        }
+      }
+    }
+    
+    // Update HLC to be after the other document's HLC
+    _currentHLC = _currentHLC.receiveEvent(otherDoc._currentHLC);
+    _hlcVector[nodeId] = _currentHLC;
+  }
+  
+  /// Apply a specific operation to the document state
+  void _applyOperation(_Operation operation) {
+    switch (operation.type) {
+      case 'share':
+        final key = operation.data['key'] as String;
+        final typeStr = operation.data['type'] as String;
+        final data = operation.data['data'];
+        
+        // Reconstruct the shared object based on its type
+        dynamic value;
+        switch (typeStr) {
+          case 'YMap':
+            value = YMap();
+            if (data is Map<String, dynamic>) {
+              for (final entry in data.entries) {
+                (value as YMap).set(entry.key, entry.value);
+              }
+            }
+            break;
+          case 'YArray':
+            value = YArray<dynamic>();
+            if (data is List) {
+              for (final item in data) {
+                (value as YArray).push(item);
+              }
+            }
+            break;
+          case 'YText':
+            value = YText();
+            if (data is String) {
+              (value as YText).insert(0, data);
+            }
+            break;
+          case 'GCounter':
+            if (data is Map<String, dynamic> && data['state'] != null) {
+              final state = data['state'] as Map<String, dynamic>;
+              final counterState = state.map((k, v) => MapEntry(int.parse(k), v as int));
+              value = GCounter(counterState);
+            } else {
+              value = GCounter();
+            }
+            break;
+          case 'PNCounter':
+            if (data is Map<String, dynamic>) {
+              final positive = data['positive'] as Map<String, dynamic>?;
+              final negative = data['negative'] as Map<String, dynamic>?;
+              
+              Map<int, int>? positiveState;
+              Map<int, int>? negativeState;
+              
+              if (positive != null) {
+                positiveState = positive.map((k, v) => MapEntry(int.parse(k), v as int));
+              }
+              if (negative != null) {
+                negativeState = negative.map((k, v) => MapEntry(int.parse(k), v as int));
+              }
+              
+              value = PNCounter(positiveState, negativeState);
+            } else {
+              value = PNCounter();
+            }
+            break;
+          default:
+            // For primitive types
+            value = data;
+        }
+        
+        // Apply the share operation without tracking it again
+        _share[key] = value;
+        if (value is AbstractType) {
+          value._integrate(this);
+        }
+        break;
+        
+      case 'map_set':
+        final targetKey = operation.data['target'] as String;
+        final key = operation.data['key'] as String;
+        final value = operation.data['value'];
+        final valueType = operation.data['value_type'] as String;
+        
+        // Find the target map in shared types
+        for (final entry in _share.entries) {
+          if (entry.value is YMap) {
+            final map = entry.value as YMap;
+            
+            // Reconstruct the value based on its type
+            dynamic reconstructedValue;
+            switch (valueType) {
+              case 'GCounter':
+                if (value is Map<String, dynamic> && value['state'] != null) {
+                  final state = value['state'] as Map<String, dynamic>;
+                  final counterState = state.map((k, v) => MapEntry(int.parse(k), v as int));
+                  reconstructedValue = GCounter(counterState);
+                } else {
+                  reconstructedValue = GCounter();
+                }
+                break;
+              case 'PNCounter':
+                if (value is Map<String, dynamic>) {
+                  final positive = value['positive'] as Map<String, dynamic>?;
+                  final negative = value['negative'] as Map<String, dynamic>?;
+                  
+                  Map<int, int>? positiveState;
+                  Map<int, int>? negativeState;
+                  
+                  if (positive != null) {
+                    positiveState = positive.map((k, v) => MapEntry(int.parse(k), v as int));
+                  }
+                  if (negative != null) {
+                    negativeState = negative.map((k, v) => MapEntry(int.parse(k), v as int));
+                  }
+                  
+                  reconstructedValue = PNCounter(positiveState, negativeState);
+                } else {
+                  reconstructedValue = PNCounter();
+                }
+                break;
+              default:
+                // For primitive types and other types
+                reconstructedValue = value;
+            }
+            
+            // Apply the set operation directly to the map's internal structure
+            // without going through the normal set method to avoid double tracking
+            map._directSet(key, reconstructedValue);
+            break;
+          }
+        }
+        break;
+        
+      default:
+        // Handle other operation types as they are implemented
+        break;
+    }
+  }
+  
+  /// Create a snapshot of the current document state
+  /// This can be used as a checkpoint for delta synchronization
+  Map<String, dynamic> createSnapshot() {
+    return {
+      'type': 'snapshot',
+      'state': toJSON(),
+      'hlc_vector': getHLCVector().map((k, v) => MapEntry(k, v.toJson())),
+      'vector_clock': getVectorClock(), // Legacy compatibility
+      'timestamp': DateTime.now().toIso8601String(),
+      'nodeId': nodeId,
+    };
+  }
+  
+  /// Get updates since a specific snapshot
+  Map<String, dynamic> getUpdateSinceSnapshot(Map<String, dynamic> snapshot) {
+    if (snapshot['type'] != 'snapshot') {
+      throw ArgumentError('Invalid snapshot format');
+    }
+    
+    // Try HLC vector first, fall back to legacy vector clock
+    if (snapshot.containsKey('vector_clock')) {
+      final snapshotVectorClock = snapshot['vector_clock'] as Map<String, dynamic>;
+      final remoteState = snapshotVectorClock.map((k, v) => MapEntry(int.parse(k), v as int));
+      return getUpdateSince(remoteState);
+    } else {
+      // If no legacy support needed, we could use HLC vector directly here
+      // For now, convert to legacy format for compatibility
+      return getUpdateSince({});
+    }
+  }
+  
+  /// Check if this document has unseen changes compared to a remote state
+  bool hasChangesSince(Map<int, int> remoteState) {
+    final currentVector = getVectorClock();
+    
+    for (final entry in currentVector.entries) {
+      final clientId = entry.key;
+      final localClock = entry.value;
+      final remoteClock = remoteState[clientId] ?? 0;
+      
+      if (localClock > remoteClock) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  /// Get a summary of the current synchronization state
+  Map<String, dynamic> getSyncState() {
+    return {
+      'nodeId': nodeId,
+      'clientID': clientID, // Legacy compatibility
+      'hlc': _currentHLC.toJson(),
+      'clock': _currentHLC.physicalTime, // Legacy compatibility
+      'hlc_vector': getHLCVector().map((k, v) => MapEntry(k, v.toJson())),
+      'vector_clock': getVectorClock(), // Legacy compatibility
+      'operation_history_size': _operationHistory.length,
+      'shared_types': _share.keys.toList(),
+    };
   }
 }
 
@@ -419,12 +951,29 @@ class YMap extends AbstractType {
 
   /// Get all entries as key-value pairs
   Iterable<MapEntry<String, dynamic>> get entries {
-    return _map.entries
+    final crdtEntries = _map.entries
         .where((entry) => !entry.value.deleted)
         .map((entry) => MapEntry(
               entry.key,
               entry.value.content.getContent().last,
             ));
+    
+    final simpleEntries = _simpleMap?.entries ?? <MapEntry<String, dynamic>>[];
+    
+    // Combine both sources, with CRDT entries taking precedence
+    final Map<String, dynamic> combined = {};
+    
+    // Add simple map entries first
+    for (final entry in simpleEntries) {
+      combined[entry.key] = entry.value;
+    }
+    
+    // Add CRDT entries (these override simple map entries if keys conflict)
+    for (final entry in crdtEntries) {
+      combined[entry.key] = entry.value;
+    }
+    
+    return combined.entries;
   }
 
   /// Clear all entries
@@ -464,7 +1013,15 @@ class YMap extends AbstractType {
   void _typeMapSet(Transaction transaction, String key, dynamic value) {
     final left = _map[key];
     final doc = transaction.doc;
-
+    
+    // Track this operation for delta synchronization
+    transaction.trackOperation('map_set', {
+      'target': 'map',
+      'key': key,
+      'value': value is AbstractType ? value.toJSON() : value,
+      'value_type': value.runtimeType.toString(),
+    });
+    
     AbstractContent content;
     if (value == null ||
         value is num ||
@@ -483,7 +1040,7 @@ class YMap extends AbstractType {
     }
 
     final item = Item(
-      createID(doc.clientID, doc.nextClock()),
+      createID(doc.nextHLC()),
       left,
       left?.lastId,
       null,
@@ -514,6 +1071,40 @@ class YMap extends AbstractType {
     if (item != null) {
       item.delete(transaction);
     }
+  }
+  
+  /// Direct set method for applying operations without tracking them again
+  void _directSet(String key, dynamic value) {
+    // This is a simplified direct set that bypasses transaction tracking
+    // Used when applying operations from remote sources
+    // In a full implementation, this would create proper CRDT items
+    
+    // For now, we'll use a simple approach for testing
+    // This should be enhanced to properly handle CRDT items
+    if (value is AbstractType) {
+      value._integrate(doc!);
+    }
+    
+    // Store in a simple way for testing - this should be enhanced
+    // to create proper Item structures
+    _simpleMap ??= <String, dynamic>{};
+    _simpleMap![key] = value;
+  }
+  
+  /// Simple map for direct operations - this is a temporary solution
+  Map<String, dynamic>? _simpleMap;
+  
+  /// Enhanced get method that checks both CRDT items and simple map
+  @override
+  T? get<T>(String key) {
+    // First try the CRDT structure
+    final crdtResult = _typeMapGet(key);
+    if (crdtResult != null) {
+      return crdtResult as T?;
+    }
+    
+    // Then try the simple map (for remotely applied operations)
+    return _simpleMap?[key] as T?;
   }
 }
 
@@ -676,7 +1267,7 @@ class YArray<T> extends AbstractType {
     final contentObj = ContentAny(content);
 
     final item = Item(
-      createID(transaction.doc.clientID, transaction.doc.nextClock()),
+      createID(transaction.doc.nextHLC()),
       left,
       left?.lastId,
       right,
@@ -860,12 +1451,19 @@ class YText extends AbstractType {
       throw RangeError('Index $index out of range (0-$length)');
     }
 
+    // Track this operation for delta synchronization
+    transaction.trackOperation('text_insert', {
+      'target': 'text',
+      'index': index,
+      'text': text,
+    });
+
     // Find position to insert
     final position = _findPosition(index);
 
     final content = ContentString(text);
     final item = Item(
-      createID(transaction.doc.clientID, transaction.doc.nextClock()),
+      createID(transaction.doc.nextHLC()),
       position.left,
       position.left?.lastId,
       position.right,

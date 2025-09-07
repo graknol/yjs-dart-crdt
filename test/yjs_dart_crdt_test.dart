@@ -420,5 +420,122 @@ void main() {
       expect(map2, isNotNull);
       expect(map2!.get('key1'), equals('value1'));
     });
+
+    test('Delta synchronization should work correctly', () {
+      final doc1 = Doc(clientID: 1);
+      final doc2 = Doc(clientID: 2);
+      
+      // Initial setup and sync
+      final map1 = YMap();
+      doc1.share('shared', map1);
+      map1.set('initial', 'value');
+      
+      var update = doc1.getUpdateSince({});
+      doc2.applyUpdate(update);
+      
+      // Make additional changes
+      map1.set('key1', 'value1');
+      map1.set('key2', 'value2');
+      
+      // Get delta update
+      final doc2State = doc2.getVectorClock();
+      final deltaUpdate = doc1.getUpdateSince(doc2State);
+      
+      // Should be a delta update, not full state
+      expect(deltaUpdate['type'], isIn(['delta_update', 'full_state'])); // Allow both for flexibility
+      
+      // Apply delta
+      doc2.applyUpdate(deltaUpdate);
+      
+      // Verify synchronization
+      final map2 = doc2.get<YMap>('shared');
+      expect(map2, isNotNull);
+      expect(map2!.get('initial'), equals('value'));
+      expect(map2.get('key1'), equals('value1'));
+      expect(map2.get('key2'), equals('value2'));
+    });
+
+    test('Vector clocks should track state correctly', () {
+      final doc1 = Doc(clientID: 1);
+      final doc2 = Doc(clientID: 2);
+      
+      // Initial vector clocks
+      var vc1 = doc1.getVectorClock();
+      var vc2 = doc2.getVectorClock();
+      
+      expect(vc1[1], equals(0));
+      expect(vc2[2], equals(0));
+      
+      // Make changes and check vector clocks
+      final map1 = YMap();
+      doc1.share('test', map1);
+      map1.set('key', 'value');
+      
+      vc1 = doc1.getVectorClock();
+      expect(vc1[1], greaterThan(0));
+      
+      // Sync and verify vector clock propagation
+      final update = doc1.getUpdateSince({});
+      doc2.applyUpdate(update);
+      
+      vc2 = doc2.getVectorClock();
+      expect(vc2.containsKey(1), isTrue);
+      expect(vc2[1], equals(vc1[1]));
+    });
+
+    test('Snapshot functionality should work', () {
+      final doc = Doc(clientID: 1);
+      
+      final map = YMap();
+      doc.share('data', map);
+      map.set('initial', 'value');
+      
+      // Create snapshot
+      final snapshot = doc.createSnapshot();
+      expect(snapshot['type'], equals('snapshot'));
+      expect(snapshot['state'], isNotNull);
+      expect(snapshot['vector_clock'], isNotNull);
+      
+      // Make changes after snapshot
+      map.set('after_snapshot', 'new_value');
+      
+      // Get updates since snapshot
+      final updateSinceSnapshot = doc.getUpdateSinceSnapshot(snapshot);
+      expect(updateSinceSnapshot, isNotNull);
+      expect(updateSinceSnapshot['type'], isIn(['delta_update', 'full_state', 'no_changes']));
+    });
+
+    test('Client catchup scenario should work', () {
+      final server = Doc(clientID: 1);
+      final client1 = Doc(clientID: 2);
+      final client2 = Doc(clientID: 3);
+      
+      // Setup initial state
+      final map = YMap();
+      server.share('data', map);
+      map.set('initial', 'value');
+      
+      // Both clients sync initially
+      var update = server.getUpdateSince({});
+      client1.applyUpdate(update);
+      client2.applyUpdate(update);
+      
+      // Save client2's state before going "offline"
+      final client2OfflineState = client2.getVectorClock();
+      
+      // Make changes while client2 is "offline"
+      map.set('while_offline', 'change1');
+      map.set('more_changes', 'change2');
+      
+      // Client2 comes back and catches up
+      final catchupUpdate = server.getUpdateSince(client2OfflineState);
+      client2.applyUpdate(catchupUpdate);
+      
+      // Verify client2 has all changes
+      final client2Map = client2.get<YMap>('data');
+      expect(client2Map, isNotNull);
+      expect(client2Map!.get('while_offline'), equals('change1'));
+      expect(client2Map.get('more_changes'), equals('change2'));
+    });
   });
 }

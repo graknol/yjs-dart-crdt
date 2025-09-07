@@ -1,5 +1,5 @@
 /// Core ID system for CRDT operations
-/// 
+///
 /// Based on Lamport timestamps with clientID and logical clock
 class ID {
   final int client;

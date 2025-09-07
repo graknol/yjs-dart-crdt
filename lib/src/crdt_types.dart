@@ -51,8 +51,8 @@ class Item extends AbstractStruct {
     this.parent,
     this.parentSub,
     this.content,
-  ) : _info = content.isCountable() ? _BIT_COUNTABLE : 0,
-      super(id, content.getLength());
+  )   : _info = content.isCountable() ? _BIT_COUNTABLE : 0,
+        super(id, content.getLength());
 
   static const int _BIT_KEEP = 1;
   static const int _BIT_COUNTABLE = 2;
@@ -118,7 +118,7 @@ class Item extends AbstractStruct {
   void integrate(Transaction transaction, int offset) {
     // Simplified integration - in full Y.js this is much more complex
     // with conflict resolution using the YATA algorithm
-    
+
     if (offset > 0) {
       // Split the item if needed
       content = content.splice(offset);
@@ -196,6 +196,9 @@ class Doc {
   /// Increment and return the next clock value
   int nextClock() => ++_clock;
 
+  /// Set the clock value (used during deserialization)
+  void setClock(int clock) => _clock = clock;
+
   /// Get a shared type by key
   T? get<T>(String key) => _share[key] as T?;
 
@@ -224,7 +227,7 @@ class Doc {
     for (final entry in _share.entries) {
       final key = entry.key;
       final value = entry.value;
-      
+
       if (value is AbstractType) {
         result['shared'][key] = {
           'type': value.runtimeType.toString(),
@@ -245,18 +248,18 @@ class Doc {
   static Doc fromJSON(Map<String, dynamic> json) {
     final clientID = json['clientID'] as int?;
     final clock = json['clock'] as int? ?? 0;
-    
+
     final doc = Doc(clientID: clientID);
-    doc._clock = clock;
-    
+    doc.setClock(clock);
+
     final shared = json['shared'] as Map<String, dynamic>? ?? {};
-    
+
     for (final entry in shared.entries) {
       final key = entry.key;
       final itemData = entry.value as Map<String, dynamic>;
       final type = itemData['type'] as String;
       final data = itemData['data'];
-      
+
       switch (type) {
         case 'YMap':
           final ymap = YMap();
@@ -291,7 +294,7 @@ class Doc {
           doc._share[key] = data;
       }
     }
-    
+
     return doc;
   }
 
@@ -310,17 +313,17 @@ class Doc {
   /// Apply an update/delta to this document
   void applyUpdate(Map<String, dynamic> update) {
     final updateType = update['type'] as String;
-    
+
     if (updateType == 'full_state') {
       final state = update['state'] as Map<String, dynamic>;
       final otherDoc = Doc.fromJSON(state);
-      
+
       // Merge the other document's state into this one
       // This is a simplified merge - full implementation would be more complex
       for (final entry in otherDoc._share.entries) {
         final key = entry.key;
         final value = entry.value;
-        
+
         if (!_share.containsKey(key)) {
           share(key, value);
         } else {
@@ -328,7 +331,7 @@ class Doc {
           share(key, value);
         }
       }
-      
+
       // Update clock to maximum
       _clock = (_clock > otherDoc._clock) ? _clock : otherDoc._clock;
     }
@@ -362,7 +365,7 @@ abstract class AbstractType {
 }
 
 /// Y.Map - A collaborative Map CRDT implementation
-/// 
+///
 /// Last-write-wins semantics for each key.
 /// Supports nested CRDT types as values.
 class YMap extends AbstractType {
@@ -461,7 +464,7 @@ class YMap extends AbstractType {
   void _typeMapSet(Transaction transaction, String key, dynamic value) {
     final left = _map[key];
     final doc = transaction.doc;
-    
+
     AbstractContent content;
     if (value == null ||
         value is num ||
@@ -472,8 +475,8 @@ class YMap extends AbstractType {
       content = ContentAny([value]);
     } else if (value is AbstractType) {
       content = ContentType(value);
-    } else if (value.runtimeType.toString() == 'GCounter' || 
-               value.runtimeType.toString() == 'PNCounter') {
+    } else if (value.runtimeType.toString() == 'GCounter' ||
+        value.runtimeType.toString() == 'PNCounter') {
       content = ContentCounter(value);
     } else {
       throw ArgumentError('Unsupported value type: ${value.runtimeType}');
@@ -515,7 +518,7 @@ class YMap extends AbstractType {
 }
 
 /// Y.Array - A collaborative Array CRDT implementation
-/// 
+///
 /// Maintains insertion order with support for concurrent modifications.
 /// Uses a doubly-linked list internally for efficient insertions.
 class YArray<T> extends AbstractType {
@@ -660,7 +663,8 @@ class YArray<T> extends AbstractType {
 
   // Internal helper methods
 
-  void _typeListInsert(Transaction transaction, int index, List<dynamic> content) {
+  void _typeListInsert(
+      Transaction transaction, int index, List<dynamic> content) {
     if (index > _length) {
       throw RangeError('Index $index out of range (0-$_length)');
     }
@@ -670,7 +674,7 @@ class YArray<T> extends AbstractType {
 
     // Create content
     final contentObj = ContentAny(content);
-    
+
     final item = Item(
       createID(transaction.doc.clientID, transaction.doc.nextClock()),
       left,
@@ -691,14 +695,15 @@ class YArray<T> extends AbstractType {
     int deletedCount = 0;
     int currentIndex = 0;
     Item? current = _start;
-    
+
     while (current != null && deletedCount < deleteCount) {
       if (!current.deleted && current.countable) {
         final content = current.content.getContent();
         final itemLength = content.length;
-        
+
         // Check if this item overlaps with deletion range
-        if (currentIndex < index + deleteCount && currentIndex + itemLength > index) {
+        if (currentIndex < index + deleteCount &&
+            currentIndex + itemLength > index) {
           // This item should be deleted (or part of it)
           current.delete(transaction);
           deletedCount += itemLength;
@@ -711,15 +716,15 @@ class YArray<T> extends AbstractType {
 
   dynamic _typeListGet(int index) {
     if (index < 0) return null;
-    
+
     Item? current = _start;
     int currentIndex = 0;
-    
+
     while (current != null) {
       if (!current.deleted && current.countable) {
         final content = current.content.getContent();
         final itemLength = content.length;
-        
+
         if (currentIndex + itemLength > index) {
           // Found the item containing this index
           final localIndex = index - currentIndex;
@@ -729,16 +734,16 @@ class YArray<T> extends AbstractType {
       }
       current = current.right;
     }
-    
+
     return null;
   }
 
   Item? _findItemAtIndex(int index) {
     if (index < 0) return null;
-    
+
     Item? current = _start;
     int currentIndex = 0;
-    
+
     while (current != null && currentIndex <= index) {
       if (!current.deleted && current.countable) {
         final itemLength = current.content.getLength();
@@ -749,13 +754,13 @@ class YArray<T> extends AbstractType {
       }
       current = current.right;
     }
-    
+
     return null;
   }
 }
 
 /// Y.Text - A collaborative text CRDT implementation
-/// 
+///
 /// Supports concurrent text editing with character-level operations.
 /// This is a simplified version without rich text formatting.
 class YText extends AbstractType {
@@ -781,7 +786,7 @@ class YText extends AbstractType {
   /// Insert text at the specified position
   void insert(int index, String text) {
     if (text.isEmpty) return;
-    
+
     final doc = this.doc;
     if (doc != null) {
       doc.transact((transaction) {
@@ -796,7 +801,7 @@ class YText extends AbstractType {
   /// Delete characters starting at index
   void delete(int index, int deleteCount) {
     if (deleteCount <= 0) return;
-    
+
     final doc = this.doc;
     if (doc != null) {
       doc.transact((transaction) {
@@ -810,15 +815,17 @@ class YText extends AbstractType {
   String toString() {
     final buffer = StringBuffer();
     Item? current = _start;
-    
+
     while (current != null) {
-      if (!current.deleted && current.countable && current.content is ContentString) {
+      if (!current.deleted &&
+          current.countable &&
+          current.content is ContentString) {
         final content = current.content as ContentString;
         buffer.write(content.str);
       }
       current = current.right;
     }
-    
+
     return buffer.toString();
   }
 
@@ -855,7 +862,7 @@ class YText extends AbstractType {
 
     // Find position to insert
     final position = _findPosition(index);
-    
+
     final content = ContentString(text);
     final item = Item(
       createID(transaction.doc.clientID, transaction.doc.nextClock()),
@@ -877,18 +884,20 @@ class YText extends AbstractType {
     final endIndex = (index + deleteCount).clamp(0, length);
     int currentIndex = 0;
     Item? current = _start;
-    
+
     while (current != null && currentIndex < endIndex) {
-      if (!current.deleted && current.countable && current.content is ContentString) {
+      if (!current.deleted &&
+          current.countable &&
+          current.content is ContentString) {
         final content = current.content as ContentString;
         final itemStart = currentIndex;
         final itemEnd = currentIndex + content.str.length;
-        
+
         if (itemStart < endIndex && itemEnd > index) {
           // This item overlaps with the deletion range
           final deleteStart = (index - itemStart).clamp(0, content.str.length);
           final deleteEnd = (endIndex - itemStart).clamp(0, content.str.length);
-          
+
           if (deleteStart == 0 && deleteEnd >= content.str.length) {
             // Delete entire item
             current.delete(transaction);
@@ -896,11 +905,11 @@ class YText extends AbstractType {
             // Partial deletion - simplified approach
             // In a full implementation, this would split the item
             final newText = content.str.substring(0, deleteStart) +
-                           content.str.substring(deleteEnd);
+                content.str.substring(deleteEnd);
             content.str = newText;
           }
         }
-        
+
         currentIndex = itemEnd;
       }
       current = current.right;
@@ -912,15 +921,17 @@ class YText extends AbstractType {
     if (index == 0) {
       return _TextPosition(null, _start);
     }
-    
+
     int currentIndex = 0;
     Item? current = _start;
-    
+
     while (current != null) {
-      if (!current.deleted && current.countable && current.content is ContentString) {
+      if (!current.deleted &&
+          current.countable &&
+          current.content is ContentString) {
         final content = current.content as ContentString;
         final nextIndex = currentIndex + content.str.length;
-        
+
         if (nextIndex >= index) {
           // Insert within or at the end of this item
           if (nextIndex == index) {
@@ -931,12 +942,12 @@ class YText extends AbstractType {
             return _TextPosition(current, current.right);
           }
         }
-        
+
         currentIndex = nextIndex;
       }
       current = current.right;
     }
-    
+
     // Insert at the end
     Item? lastItem = _start;
     while (lastItem?.right != null) {

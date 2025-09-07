@@ -11,7 +11,7 @@ void main() {
       counter1.increment(1, 5);
       expect(counter1.value, equals(5));
 
-      // Client 2 increments  
+      // Client 2 increments
       counter2.increment(2, 3);
       expect(counter2.value, equals(3));
 
@@ -65,7 +65,7 @@ void main() {
       counter1.decrement(1, 3);
       expect(counter1.value, equals(7));
 
-      // Client 2: +5, -1 = 4  
+      // Client 2: +5, -1 = 4
       counter2.increment(2, 5);
       counter2.decrement(2, 1);
       expect(counter2.value, equals(4));
@@ -82,7 +82,7 @@ void main() {
 
       final json = gcounter.toJSON();
       final restored = GCounter.fromJSON(json);
-      
+
       expect(restored.value, equals(gcounter.value));
       expect(restored, equals(gcounter));
 
@@ -92,7 +92,7 @@ void main() {
 
       final pnJson = pncounter.toJSON();
       final pnRestored = PNCounter.fromJSON(pnJson);
-      
+
       expect(pnRestored.value, equals(pncounter.value));
       expect(pnRestored, equals(pncounter));
     });
@@ -126,7 +126,7 @@ void main() {
 
     test('should check key existence', () {
       map.set('existing', 'value');
-      
+
       expect(map.has('existing'), isTrue);
       expect(map.has('nonexistent'), isFalse);
     });
@@ -134,7 +134,7 @@ void main() {
     test('should delete keys', () {
       map.set('temp', 'value');
       expect(map.has('temp'), isTrue);
-      
+
       map.delete('temp');
       expect(map.has('temp'), isFalse);
       expect(map.get('temp'), isNull);
@@ -155,7 +155,7 @@ void main() {
     test('should handle overwriting values', () {
       map.set('key', 'initial');
       expect(map.get('key'), equals('initial'));
-      
+
       map.set('key', 'updated');
       expect(map.get('key'), equals('updated'));
       expect(map.size, equals(1)); // Size should remain 1
@@ -164,13 +164,13 @@ void main() {
     test('should support GCounter values', () {
       final counter = GCounter();
       counter.increment(doc.clientID, 5);
-      
+
       map.set('progress', counter);
       expect(map.has('progress'), isTrue);
-      
+
       final retrieved = map.get('progress') as GCounter;
       expect(retrieved.value, equals(5));
-      
+
       // Increment the retrieved counter
       retrieved.increment(doc.clientID, 3);
       expect(retrieved.value, equals(8));
@@ -180,13 +180,13 @@ void main() {
       final counter = PNCounter();
       counter.increment(doc.clientID, 10);
       counter.decrement(doc.clientID, 3);
-      
+
       map.set('balance', counter);
       expect(map.has('balance'), isTrue);
-      
+
       final retrieved = map.get('balance') as PNCounter;
       expect(retrieved.value, equals(7)); // 10 - 3
-      
+
       // Modify the retrieved counter
       retrieved.add(doc.clientID, -2);
       expect(retrieved.value, equals(5)); // 7 - 2
@@ -237,18 +237,18 @@ void main() {
 
     test('should handle array access operators', () {
       array.pushAll(['x', 'y', 'z']);
-      
+
       expect(array[0], equals('x'));
       expect(array[1], equals('y'));
       expect(array[2], equals('z'));
-      
+
       array[1] = 'Y'; // This should replace 'y' with 'Y'
       expect(array[1], equals('Y'));
     });
 
     test('should convert to JSON', () {
       array.pushAll(['hello', 'world']);
-      
+
       final json = array.toJSON();
       expect(json, isA<List>());
       expect(json, equals(['hello', 'world']));
@@ -293,7 +293,7 @@ void main() {
 
     test('should handle charAt', () {
       text.insert(0, 'Test');
-      
+
       expect(text.charAt(0), equals('T'));
       expect(text.charAt(1), equals('e'));
       expect(text.charAt(3), equals('t'));
@@ -303,7 +303,7 @@ void main() {
     test('should create text with initial content', () {
       final initialText = YText('Initial content');
       doc.share('initial', initialText);
-      
+
       expect(initialText.toString(), equals('Initial content'));
       expect(initialText.length, equals(15));
     });
@@ -313,7 +313,7 @@ void main() {
     test('should generate unique client IDs', () {
       final doc1 = Doc();
       final doc2 = Doc();
-      
+
       expect(doc1.clientID, isNot(equals(doc2.clientID)));
     });
 
@@ -321,12 +321,12 @@ void main() {
       final doc = Doc();
       final map = YMap();
       doc.share('map', map);
-      
+
       final initialClock = doc.getState();
-      
+
       map.set('key1', 'value1');
       expect(doc.getState(), greaterThan(initialClock));
-      
+
       map.set('key2', 'value2');
       expect(doc.getState(), greaterThan(initialClock + 1));
     });
@@ -335,15 +335,15 @@ void main() {
       final doc = Doc();
       final map = YMap();
       doc.share('map', map);
-      
+
       final initialClock = doc.getState();
-      
+
       doc.transact((transaction) {
         map.set('key1', 'value1');
         map.set('key2', 'value2');
         map.set('key3', 'value3');
       });
-      
+
       expect(doc.getState(), greaterThan(initialClock));
       expect(map.size, equals(3));
     });
@@ -354,17 +354,17 @@ void main() {
       final doc = Doc(clientID: 12345);
       final map = YMap();
       doc.share('testMap', map);
-      
+
       map.set('string', 'hello');
       map.set('number', 42);
       map.set('boolean', true);
-      
+
       // Serialize and deserialize
       final json = doc.toJSON();
       final restoredDoc = Doc.fromJSON(json);
-      
+
       expect(restoredDoc.clientID, equals(12345));
-      
+
       final restoredMap = restoredDoc.get<YMap>('testMap');
       expect(restoredMap, isNotNull);
       expect(restoredMap!.get('string'), equals('hello'));
@@ -377,27 +377,27 @@ void main() {
       final map = YMap();
       final gCounter = GCounter();
       final pnCounter = PNCounter();
-      
+
       gCounter.increment(doc.clientID, 5);
       pnCounter.increment(doc.clientID, 10);
       pnCounter.decrement(doc.clientID, 3);
-      
+
       map.set('progress', gCounter);
       map.set('balance', pnCounter);
       doc.share('counters', map);
-      
+
       // Serialize and deserialize
       final json = doc.toJSON();
       final restoredDoc = Doc.fromJSON(json);
-      
+
       final restoredMap = restoredDoc.get<YMap>('counters');
       expect(restoredMap, isNotNull);
-      
+
       // Note: After deserialization, counters become regular maps
       // This is a limitation of the current simple serialization approach
       final progressData = restoredMap!.get('progress');
       final balanceData = restoredMap.get('balance');
-      
+
       expect(progressData, isNotNull);
       expect(balanceData, isNotNull);
     });
@@ -405,17 +405,17 @@ void main() {
     test('Update generation and application should work', () {
       final doc1 = Doc(clientID: 1);
       final doc2 = Doc(clientID: 2);
-      
+
       final map1 = YMap();
       doc1.share('shared', map1);
       map1.set('key1', 'value1');
-      
+
       // Generate update from doc1
       final update = doc1.getUpdateSince({});
-      
+
       // Apply to doc2
       doc2.applyUpdate(update);
-      
+
       final map2 = doc2.get<YMap>('shared');
       expect(map2, isNotNull);
       expect(map2!.get('key1'), equals('value1'));

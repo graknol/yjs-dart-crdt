@@ -1,4 +1,3 @@
-
 import 'counters.dart';
 
 /// Abstract base class for all content types in CRDT operations
@@ -197,7 +196,7 @@ class ContentCounter extends AbstractContent {
   @override
   bool mergeWith(AbstractContent right) {
     // Counters can be merged by merging their internal state
-    if (right is ContentCounter && 
+    if (right is ContentCounter &&
         counter.runtimeType == right.counter.runtimeType) {
       counter.merge(right.counter);
       return true;

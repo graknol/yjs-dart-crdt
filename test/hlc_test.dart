@@ -176,5 +176,69 @@ void main() {
       expect(hlcVector.containsKey('client-1'), isTrue);
       expect(hlcVector.containsKey('client-2'), isTrue);
     });
+
+    test('Should not miss operations when clients sync concurrent changes at same millisecond', () {
+      final server = Doc(nodeId: 'server');
+      final clientA = Doc(nodeId: 'client-a');  // Lexicographically first
+      final clientB = Doc(nodeId: 'client-b');  // Lexicographically second
+      
+      // Initial sync - all clients have same starting state
+      final serverMap = YMap();
+      server.share('doc', serverMap);
+      
+      final initialUpdate = server.getUpdateSince({});
+      clientA.applyUpdate(initialUpdate);
+      clientB.applyUpdate(initialUpdate);
+      
+      // Clients go "offline" - save their current state
+      final clientAOfflineState = clientA.getVectorClock();
+      final clientBOfflineState = clientB.getVectorClock();
+      
+      // Both clients make concurrent changes while "offline"
+      final mapA = clientA.get<YMap>('doc')!;
+      final mapB = clientB.get<YMap>('doc')!;
+      
+      mapA.set('keyA', 'valueA');
+      mapB.set('keyB', 'valueB');
+      
+      // Both clients sync their changes to server
+      final updateA = clientA.getUpdateSince(server.getVectorClock());
+      final updateB = clientB.getUpdateSince(server.getVectorClock());
+      
+      server.applyUpdate(updateA);
+      server.applyUpdate(updateB);
+      
+      // Critical test: when clients request deltas, they should get each other's operations
+      // Client A requests delta (should get Client B's operation)
+      final deltaForA = server.getUpdateSince(clientAOfflineState);
+      expect(deltaForA['type'], equals('delta_update'));
+      
+      final operationsForA = deltaForA['operations'] as List;
+      expect(operationsForA.length, greaterThan(0));
+      
+      // Client B requests delta (should get Client A's operation)
+      final deltaForB = server.getUpdateSince(clientBOfflineState);
+      expect(deltaForB['type'], equals('delta_update'));
+      
+      final operationsForB = deltaForB['operations'] as List;
+      expect(operationsForB.length, greaterThan(0));
+      
+      // Apply the deltas
+      clientA.applyUpdate(deltaForB);  // Client A gets Client B's changes
+      clientB.applyUpdate(deltaForA);  // Client B gets Client A's changes
+      
+      // Verify both clients now have both operations (no missing operations)
+      final finalMapA = clientA.get<YMap>('doc')!;
+      final finalMapB = clientB.get<YMap>('doc')!;
+      
+      expect(finalMapA.get('keyA'), equals('valueA'));  // Client A keeps their own change
+      expect(finalMapA.get('keyB'), equals('valueB'));  // Client A receives Client B's change
+      expect(finalMapB.get('keyA'), equals('valueA'));  // Client B receives Client A's change
+      expect(finalMapB.get('keyB'), equals('valueB'));  // Client B keeps their own change
+      
+      // Final verification: all three documents should be identical
+      expect(serverMap.get('keyA'), equals('valueA'));
+      expect(serverMap.get('keyB'), equals('valueB'));
+    });
   });
 }

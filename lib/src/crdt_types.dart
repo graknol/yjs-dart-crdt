@@ -182,6 +182,9 @@ class Doc {
 
   Doc({int? clientID}) : clientID = clientID ?? _generateClientID();
 
+  /// Get a copy of the shared types (for serialization)
+  Map<String, dynamic> get sharedTypes => Map.from(_share);
+
   static int _generateClientID() {
     // Generate a random 32-bit client ID
     return DateTime.now().microsecondsSinceEpoch & 0xFFFFFFFF;

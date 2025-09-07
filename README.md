@@ -1,6 +1,6 @@
 # Y.js Dart CRDT
 
-A pure Dart implementation of Y.js core CRDT (Conflict-free Replicated Data Type) data structures for offline-first Flutter applications.
+A pure Dart implementation of Y.js core CRDT (Conflict-free Replicated Data Type) data structures for offline-first Flutter applications. Features Hybrid Logical Clocks for enhanced server synchronization and causality tracking.
 
 ## Features
 
@@ -9,11 +9,15 @@ A pure Dart implementation of Y.js core CRDT (Conflict-free Replicated Data Type
 - **YText**: Collaborative text editing with character-level operations
 - **GCounter**: Grow-only counter for collaborative increment operations
 - **PNCounter**: Positive-negative counter supporting increment/decrement
+- **Hybrid Logical Clocks**: Advanced causality tracking with millisecond precision
+- **Delta Synchronization**: Efficient incremental updates instead of full document state
+- **Node ID Support**: GUID v4 for users, configurable hardcoded IDs for services  
 - **Serialization**: Document state export/import with JSON and binary formats
-- **Synchronization**: Basic update generation and merging for server coordination
+- **Server Integration Ready**: HLC-based synchronization for multi-client coordination
 - **Pure Dart**: No external dependencies, Flutter-compatible
 - **Offline-first**: Local operations with built-in conflict resolution
 - **Type-safe**: Full Dart generics support
+- **Backward Compatible**: Legacy clientID support for existing implementations
 
 ## Quick Start
 
@@ -80,8 +84,9 @@ void main() {
 The document container that manages CRDT types and operations.
 
 ```dart
-final doc = Doc(); // Creates with random client ID
-final doc = Doc(clientID: 12345); // Creates with specific client ID
+final doc = Doc(); // Creates with GUID v4 node ID
+final doc = Doc(clientID: 12345); // Legacy: converts to 'legacy-12345' node ID  
+final doc = Doc(nodeId: 'server-1'); // Custom node ID (for services)
 
 // Share a CRDT type
 doc.share('key', yMapInstance);
@@ -94,6 +99,69 @@ doc.transact((transaction) {
   map.set('key1', 'value1');
   map.set('key2', 'value2');
 });
+```
+
+### Hybrid Logical Clocks
+
+Advanced causality tracking for server synchronization.
+
+```dart
+// Create HLC with current time
+final hlc = HLC.now('client-1');
+print(hlc); // HLC(1234567890:0@client-1)
+
+// HLC operations
+final nextHLC = hlc.increment();
+final receivedHLC = hlc.receiveEvent(remoteHLC);
+
+// Causality comparison
+if (hlc1.happensBefore(hlc2)) {
+  print('hlc1 happened before hlc2');
+}
+
+// Document HLC integration
+final doc = Doc(nodeId: 'server-1');
+final syncState = doc.getSyncState();
+print(syncState['hlc']); // Current HLC state
+print(syncState['hlc_vector']); // HLC vector for all known nodes
+
+// Generate GUID v4 node IDs
+final nodeId = generateGuidV4();
+final doc = Doc(nodeId: nodeId);
+```
+
+### Delta Synchronization with HLC
+
+Efficient incremental updates using HLC-based causality.
+
+```dart
+// Server setup
+final server = Doc(nodeId: 'server');
+final serverMap = YMap();
+server.share('document', serverMap);
+
+// Client setup  
+final client = Doc(nodeId: generateGuidV4());
+
+// Initial sync - client gets full state
+final initialUpdate = server.getUpdateSince({});
+client.applyUpdate(initialUpdate);
+
+// Client makes changes
+final clientMap = client.get<YMap>('document')!;
+clientMap.set('clientData', 'hello from client');
+
+// Delta sync - only sends changes since server's known state
+final serverState = server.getVectorClock(); // Legacy compatibility
+final deltaUpdate = client.getUpdateSince(serverState);
+print(deltaUpdate['type']); // 'delta_update'
+
+// Server applies delta
+server.applyUpdate(deltaUpdate);
+
+// HLC vectors track causality across all nodes
+final hlcVector = server.getSyncState()['hlc_vector'];
+print(hlcVector.keys); // ['server', 'client-guid-here']
 ```
 
 ### YMap

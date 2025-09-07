@@ -336,7 +336,14 @@ class Doc {
   }
 
   /// Set the clock value (used during deserialization)
-  void setClock(int clock) => _clock = clock;
+  void setClock(int clock) {
+    _currentHLC = HLC(
+      physicalTime: clock,
+      logicalCounter: _currentHLC.logicalCounter,
+      nodeId: nodeId,
+    );
+    _hlcVector[nodeId] = _currentHLC;
+  }
 
   /// Get a shared type by key
   T? get<T>(String key) => _share[key] as T?;
@@ -566,9 +573,9 @@ class Doc {
     final updateNodeId = update['nodeId'] as String?;
     
     // Handle HLC vector clock updates
-    final updateHLCVector = update['hlc_vector'] as Map<String, dynamic>?;
-    if (updateHLCVector != null) {
-      for (final entry in updateHLCVector.entries) {
+    final updateHLCVectorData = update['hlc_vector'] as Map<String, dynamic>?;
+    if (updateHLCVectorData != null) {
+      for (final entry in updateHLCVectorData.entries) {
         final nodeId = entry.key;
         final hlcData = entry.value as Map<String, dynamic>;
         final hlc = HLC.fromJson(hlcData);
@@ -578,7 +585,7 @@ class Doc {
     
     // Handle legacy vector clock updates for backward compatibility
     final updateVectorClock = update['vector_clock'] as Map<String, dynamic>?;
-    if (updateVectorClock != null && updateHLCVector == null) {
+    if (updateVectorClock != null && updateHLCVectorData == null) {
       for (final entry in updateVectorClock.entries) {
         final clientId = int.parse(entry.key);
         final clock = entry.value as int;
@@ -1093,19 +1100,6 @@ class YMap extends AbstractType {
   
   /// Simple map for direct operations - this is a temporary solution
   Map<String, dynamic>? _simpleMap;
-  
-  /// Enhanced get method that checks both CRDT items and simple map
-  @override
-  T? get<T>(String key) {
-    // First try the CRDT structure
-    final crdtResult = _typeMapGet(key);
-    if (crdtResult != null) {
-      return crdtResult as T?;
-    }
-    
-    // Then try the simple map (for remotely applied operations)
-    return _simpleMap?[key] as T?;
-  }
 }
 
 /// Y.Array - A collaborative Array CRDT implementation

@@ -1,80 +1,241 @@
-# Y.js Dart CRDT
+# Y.js CRDT Multi-Language Implementation
 
-A pure Dart implementation of Y.js core CRDT (Conflict-free Replicated Data Type) data structures for offline-first Flutter applications. Features Hybrid Logical Clocks for enhanced server synchronization and causality tracking.
+A comprehensive CRDT (Conflict-free Replicated Data Type) library inspired by Y.js, implemented in multiple languages for seamless client-server synchronization in offline-first applications.
 
-## Features
+## 🎯 Overview
 
-- **YMap**: Collaborative map/dictionary with last-write-wins semantics
-- **YArray**: Collaborative array with insertion-order preservation  
-- **YText**: Collaborative text editing with character-level operations
-- **GCounter**: Grow-only counter for collaborative increment operations
-- **PNCounter**: Positive-negative counter supporting increment/decrement
-- **Hybrid Logical Clocks**: Advanced causality tracking with millisecond precision
-- **Delta Synchronization**: Efficient incremental updates instead of full document state
-- **Node ID Support**: GUID v4 for users, configurable hardcoded IDs for services  
-- **Serialization**: Document state export/import with JSON and binary formats
-- **Server Integration Ready**: HLC-based synchronization for multi-client coordination
-- **Pure Dart**: No external dependencies, Flutter-compatible
-- **Offline-first**: Local operations with built-in conflict resolution
-- **Type-safe**: Full Dart generics support
-- **Backward Compatible**: Legacy clientID support for existing implementations
+This repository contains compatible implementations of Y.js core CRDT data structures in:
+- **[Dart](dart/)** - Pure Dart implementation for Flutter clients and mobile apps
+- **[C#](csharp/)** - .NET Standard implementation optimized for server environments
 
-## Quick Start
+Both implementations share the same protocol, enabling seamless synchronization between Dart clients and C# servers with features like Hybrid Logical Clocks (HLC) for advanced causality tracking.
 
-### Installation
+## 🚀 Key Features
 
-Add this to your `pubspec.yaml`:
+- **Cross-Platform Compatibility**: Dart client ↔ C# server synchronization
+- **Hybrid Logical Clocks**: Superior causality tracking with millisecond precision
+- **Delta Synchronization**: Efficient incremental updates instead of full state transfer
+- **Thread-Safe Operations**: C# implementation optimized for concurrent server scenarios
+- **Pure Implementations**: No external dependencies beyond standard libraries
+- **CRDT Types**: YMap, YArray, YText, GCounter, PNCounter
+- **Protocol Compatibility**: JSON and binary serialization formats match exactly
 
-```yaml
-dependencies:
-  yjs_dart_crdt: ^0.1.0
+## 📁 Repository Structure
+
+```
+yjs-dart-crdt/
+├── dart/                           # Dart/Flutter implementation
+│   ├── lib/                        # Dart source code
+│   ├── test/                       # Dart unit tests
+│   ├── example/                    # Dart examples
+│   └── README.md                   # Dart-specific documentation
+├── csharp/                         # C# .NET implementation
+│   ├── YjsCrdtSharp/              # Core C# library
+│   ├── YjsCrdtSharp.Examples/     # C# examples
+│   ├── YjsCrdtSharp.Tests/        # C# unit tests
+│   └── README.md                   # C#-specific documentation
+├── CSHARP_TECHNICAL_SPEC.md       # Comprehensive C# implementation guide
+└── README.md                       # This file
 ```
 
-### Basic Usage
+## 🛠️ Quick Start
+
+### Dart Client Setup
+
+```bash
+cd dart/
+dart pub get
+dart run example/main.dart
+```
 
 ```dart
 import 'package:yjs_dart_crdt/yjs_dart_crdt.dart';
 
-void main() {
-  // Create a document
-  final doc = Doc();
-  
-  // Create and use a YMap
-  final map = YMap();
-  doc.share('myMap', map);
-  
-  map.set('name', 'Alice');
-  map.set('age', 30);
-  print(map.toJSON()); // {name: Alice, age: 30}
-  
-  // Create and use a YArray
-  final array = YArray<String>();
-  doc.share('myArray', array);
-  
-  array.push('apple');
-  array.insert(0, 'banana');
-  print(array.toList()); // [banana, apple]
-  
-  // Create and use YText
-  final text = YText('Hello');
-  doc.share('myText', text);
-  
-  text.insert(5, ' World!');
-  print(text.toString()); // Hello World!
-  
-  // Use counters for collaborative progress tracking
-  final progress = GCounter();
-  progress.increment(doc.clientID, 25); // 25% progress
-  map.set('progress', progress);
-  
-  final hours = PNCounter();
-  hours.increment(doc.clientID, 8);  // 8 hours worked
-  hours.decrement(doc.clientID, 1);  // Correction: -1 hour
-  map.set('hours_logged', hours);
-  
-  print('Progress: ${progress.value}%'); // 25%
-  print('Hours: ${hours.value}');       // 7
-}
+// Create document with HLC-based node ID
+final doc = Doc();
+
+// Collaborative map
+final map = YMap();
+doc.share('myMap', map);
+map.set('name', 'Alice');
+
+// Collaborative counters
+final progress = GCounter();
+progress.increment(doc.clientID, 25);
+map.set('progress', progress);
+
+print('Progress: ${progress.value}%');
+```
+
+### C# Server Setup
+
+```bash
+cd csharp/
+dotnet build
+dotnet run --project YjsCrdtSharp.Examples
+```
+
+```csharp
+using YjsCrdtSharp.Types;
+using YjsCrdtSharp.Counters;
+
+// Create collaborative map
+var map = new YMap();
+map.Set("name", "Alice");
+
+// Collaborative counter
+var progress = new GCounter();
+progress.Increment(clientId: 1, amount: 25);
+map.Set("progress", progress);
+
+Console.WriteLine($"Progress: {progress.Value}%");
+```
+
+## 🌐 Client-Server Synchronization
+
+### Dart Client → C# Server
+
+```dart
+// Dart client
+final doc = Doc(nodeId: 'mobile-client-123');
+final map = YMap();
+doc.share('document', map);
+map.set('clientData', 'Hello from mobile!');
+
+// Generate update for server
+final update = doc.getUpdateSince({});
+// Send update to C# server via HTTP/WebSocket
+```
+
+```csharp
+// C# server receives update
+var serverMap = new YMap();
+// Apply client update (would be implemented with full Document class)
+serverMap.Set("clientData", "Hello from mobile!");
+
+// Merge with server data
+var serverProgress = new GCounter();
+serverProgress.Increment(0, 50); // Server contribution
+// Broadcast merged state to all clients
+```
+
+### Protocol Compatibility
+
+Both implementations use identical:
+- **JSON Serialization Format**: Exact same structure for network transfer
+- **HLC Vector Synchronization**: Causality tracking across all nodes
+- **Operation Ordering**: Deterministic conflict resolution
+- **Delta Updates**: Minimal data transfer for synchronization
+
+## 📊 CRDT Types
+
+| Type | Description | Dart | C# |
+|------|-------------|------|-----|
+| **YMap** | Last-write-wins dictionary | ✅ | ✅ |
+| **YArray** | Insertion-order preserving list | ✅ | 🚧 |
+| **YText** | Character-level collaborative text | ✅ | 🚧 |
+| **GCounter** | Grow-only counter | ✅ | ✅ |
+| **PNCounter** | Increment/decrement counter | ✅ | ✅ |
+| **HLC** | Hybrid Logical Clock | ✅ | ✅ |
+
+Legend: ✅ Implemented | 🚧 Planned | ❌ Not planned
+
+## 🔧 Development
+
+### Testing Dart Implementation
+
+```bash
+cd dart/
+dart test                    # Run all tests
+dart analyze                 # Code analysis
+dart format .                # Format code
+```
+
+### Testing C# Implementation
+
+```bash
+cd csharp/
+dotnet test                  # Run unit tests
+dotnet build                 # Build library
+dotnet pack                  # Create NuGet package
+```
+
+### Cross-Platform Testing
+
+The repository includes integration tests to verify protocol compatibility between Dart and C# implementations:
+
+```bash
+# Run Dart integration tests
+cd dart/ && dart test test/integration_test.dart
+
+# Run C# integration tests  
+cd csharp/ && dotnet test --filter "Category=Integration"
+```
+
+## 📈 Performance Characteristics
+
+### Dart Implementation
+- **Target**: Mobile clients, Flutter apps
+- **Memory**: Optimized for mobile constraints
+- **Threading**: Single-threaded with async/await patterns
+- **Persistence**: Local storage integration
+
+### C# Implementation  
+- **Target**: Server environments, ASP.NET Core
+- **Memory**: Optimized for server workloads
+- **Threading**: Thread-safe concurrent operations
+- **Persistence**: Database integration ready
+
+## 🔍 Use Cases
+
+### Mobile-First Applications
+- **Dart Client**: Offline-capable Flutter apps
+- **C# Server**: Centralized state management and synchronization
+- **Sync**: When online, clients sync with server using delta updates
+
+### Collaborative Editing
+- **Real-time**: Multiple clients editing shared documents
+- **Conflict-free**: CRDT properties ensure consistent state
+- **Offline**: Continue editing offline, sync when reconnected
+
+### Progress Tracking Systems
+- **Counters**: Team progress, resource usage, metrics
+- **Multi-client**: Each client contributes to shared counters
+- **Server aggregation**: C# server aggregates and persists totals
+
+## 🤝 Contributing
+
+Contributions are welcome for both implementations! Please:
+
+1. **Maintain Protocol Compatibility**: Ensure changes work across both Dart and C#
+2. **Add Tests**: Include unit tests and integration tests
+3. **Update Documentation**: Keep both language-specific READMEs updated
+4. **Follow Conventions**: Use established patterns for each language
+
+### Protocol Compatibility Requirements
+
+When adding features:
+- JSON serialization must match between implementations
+- HLC vector updates must be identical
+- Operation ordering must produce same results
+- Error handling should be consistent
+
+## 📚 Documentation
+
+- **[Dart README](dart/README.md)**: Dart-specific usage and API
+- **[C# README](csharp/README.md)**: C# server implementation guide
+- **[C# Technical Spec](CSHARP_TECHNICAL_SPEC.md)**: Comprehensive implementation details
+- **Examples**: Working code in both `dart/example/` and `csharp/YjsCrdtSharp.Examples/`
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
+
+## 🙏 Acknowledgments
+
+- Inspired by [Y.js](https://github.com/yjs/yjs) CRDT implementation
+- Based on YATA (Yet Another Transformation Approach) algorithm
+- Hybrid Logical Clock implementation for distributed systems
 ```
 
 ## API Reference

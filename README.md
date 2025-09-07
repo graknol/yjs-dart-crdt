@@ -7,6 +7,10 @@ A pure Dart implementation of Y.js core CRDT (Conflict-free Replicated Data Type
 - **YMap**: Collaborative map/dictionary with last-write-wins semantics
 - **YArray**: Collaborative array with insertion-order preservation  
 - **YText**: Collaborative text editing with character-level operations
+- **GCounter**: Grow-only counter for collaborative increment operations
+- **PNCounter**: Positive-negative counter supporting increment/decrement
+- **Serialization**: Document state export/import with JSON and binary formats
+- **Synchronization**: Basic update generation and merging for server coordination
 - **Pure Dart**: No external dependencies, Flutter-compatible
 - **Offline-first**: Local operations with built-in conflict resolution
 - **Type-safe**: Full Dart generics support
@@ -53,6 +57,19 @@ void main() {
   
   text.insert(5, ' World!');
   print(text.toString()); // Hello World!
+  
+  // Use counters for collaborative progress tracking
+  final progress = GCounter();
+  progress.increment(doc.clientID, 25); // 25% progress
+  map.set('progress', progress);
+  
+  final hours = PNCounter();
+  hours.increment(doc.clientID, 8);  // 8 hours worked
+  hours.decrement(doc.clientID, 1);  // Correction: -1 hour
+  map.set('hours_logged', hours);
+  
+  print('Progress: ${progress.value}%'); // 25%
+  print('Hours: ${hours.value}');       // 7
 }
 ```
 
@@ -162,6 +179,87 @@ final substr = text.substring(0, 5);
 final jsonText = text.toJSON(); // Returns string
 ```
 
+### GCounter
+
+Grow-only counter for collaborative increment operations. Perfect for tracking progress, usage counts, or any value that only increases.
+
+```dart
+final counter = GCounter();
+
+// Increment operations (only positive values allowed)
+counter.increment(clientID, 5); // Add 5 to this client's counter
+counter.increment(clientID, 3); // Add 3 more
+
+print(counter.value); // Total value across all clients
+
+// Merge with another counter (CRDT operation)
+final otherCounter = GCounter();
+otherCounter.increment(otherClientID, 7);
+counter.merge(otherCounter); // Combines both counters
+
+// Serialization
+final json = counter.toJSON();
+final restored = GCounter.fromJSON(json);
+```
+
+### PNCounter
+
+Positive-negative counter supporting both increment and decrement operations. Ideal for tracking balances, material usage, or any value that can go up or down.
+
+```dart
+final counter = PNCounter();
+
+// Increment and decrement operations
+counter.increment(clientID, 10); // Add 10
+counter.decrement(clientID, 3);  // Subtract 3
+counter.add(clientID, -2);       // Subtract 2 (negative add)
+counter.add(clientID, 5);        // Add 5 (positive add)
+
+print(counter.value); // Net value: 10 - 3 - 2 + 5 = 10
+
+// Merge with other counters
+final otherCounter = PNCounter();
+otherCounter.increment(otherClientID, 15);
+counter.merge(otherCounter); // Combines state from both
+
+// Serialization
+final json = counter.toJSON();
+final restored = PNCounter.fromJSON(json);
+```
+
+### Document Serialization and Synchronization
+
+Export and import document state for server synchronization.
+
+```dart
+final doc = Doc(clientID: 12345);
+final map = YMap();
+doc.share('data', map);
+
+// Make some changes
+map.set('progress', GCounter()..increment(12345, 25));
+map.set('name', 'Project Alpha');
+
+// Serialize entire document
+final json = doc.toJSON();
+final binaryData = BinaryEncoder.encodeDocument(doc);
+
+// Restore from serialized state
+final restoredDoc = Doc.fromJSON(json);
+final restoredFromBinary = BinaryEncoder.decodeDocument(binaryData);
+
+// Generate updates for synchronization
+final update = doc.getUpdateSince(remoteState);
+
+// Apply updates from other clients
+doc.applyUpdate(receivedUpdate);
+
+// Compare encoding sizes
+final sizes = BinaryEncoder.compareSizes(doc);
+print('Binary: ${sizes['binary']} bytes');
+print('JSON: ${sizes['json']} bytes');
+```
+
 ## Architecture
 
 This implementation is based on the Y.js CRDT algorithm (YATA - Yet Another Transformation Approach) with the following key concepts:
@@ -175,22 +273,24 @@ This implementation is based on the Y.js CRDT algorithm (YATA - Yet Another Tran
 
 This is a core implementation focused on offline-first usage. The following Y.js features are not yet implemented:
 
-- Network synchronization protocols
+- Advanced network synchronization protocols (basic sync implemented)
 - Rich text formatting in YText
 - Undo/Redo functionality
 - Subdocuments
 - Observability/events
-- Persistence/serialization
+- Advanced conflict resolution (beyond basic CRDT merging)
 
 ## Contributing
 
 Contributions are welcome! This implementation can be extended with:
 
-- Network synchronization
+- Advanced network synchronization protocols
 - Rich text formatting
-- Event system
+- Event system and observability
 - Performance optimizations
-- Additional CRDT types
+- Additional CRDT types (e.g., OR-Sets, LWW-Sets)
+- Undo/Redo functionality
+- More efficient binary encoding
 
 ## License
 

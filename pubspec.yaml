@@ -1,0 +1,13 @@
+name: yjs_dart_crdt
+description: Pure Dart implementation of Y.js CRDT data structures for offline-first Flutter applications
+version: 0.1.0
+homepage: https://github.com/graknol/yjs-dart-crdt
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  # No external dependencies - pure Dart implementation
+
+dev_dependencies:
+  test: ^1.24.0

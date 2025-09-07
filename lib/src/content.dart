@@ -1,4 +1,5 @@
 
+import 'counters.dart';
 
 /// Abstract base class for all content types in CRDT operations
 abstract class AbstractContent {
@@ -160,4 +161,50 @@ class ContentDeleted extends AbstractContent {
 
   @override
   int getRef() => 1; // Reference number for ContentDeleted
+}
+
+/// Content that holds CRDT counter values (GCounter or PNCounter)
+class ContentCounter extends AbstractContent {
+  final dynamic counter; // GCounter or PNCounter
+
+  ContentCounter(this.counter);
+
+  @override
+  int getLength() => 1;
+
+  @override
+  List<dynamic> getContent() => [counter];
+
+  @override
+  bool isCountable() => true;
+
+  @override
+  AbstractContent copy() {
+    // Create a copy of the counter
+    if (counter.runtimeType.toString() == 'GCounter') {
+      return ContentCounter(counter.copy());
+    } else if (counter.runtimeType.toString() == 'PNCounter') {
+      return ContentCounter(counter.copy());
+    }
+    return ContentCounter(counter);
+  }
+
+  @override
+  AbstractContent splice(int offset) {
+    throw UnsupportedError('ContentCounter cannot be split');
+  }
+
+  @override
+  bool mergeWith(AbstractContent right) {
+    // Counters can be merged by merging their internal state
+    if (right is ContentCounter && 
+        counter.runtimeType == right.counter.runtimeType) {
+      counter.merge(right.counter);
+      return true;
+    }
+    return false;
+  }
+
+  @override
+  int getRef() => 9; // Reference number for ContentCounter
 }

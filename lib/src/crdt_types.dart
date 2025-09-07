@@ -1,5 +1,6 @@
 import 'id.dart';
 import 'content.dart';
+import 'counters.dart';
 
 /// Abstract base class for all structs (Items and GC)
 abstract class AbstractStruct {
@@ -208,6 +209,127 @@ class Doc {
     final transaction = Transaction(this, local: local);
     fn(transaction);
   }
+
+  /// Serialize the entire document state to JSON
+  Map<String, dynamic> toJSON() {
+    final result = <String, dynamic>{
+      'clientID': clientID,
+      'clock': _clock,
+      'shared': <String, dynamic>{},
+    };
+
+    for (final entry in _share.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      
+      if (value is AbstractType) {
+        result['shared'][key] = {
+          'type': value.runtimeType.toString(),
+          'data': value.toJSON(),
+        };
+      } else {
+        result['shared'][key] = {
+          'type': 'primitive',
+          'data': value,
+        };
+      }
+    }
+
+    return result;
+  }
+
+  /// Create a document from serialized JSON state
+  static Doc fromJSON(Map<String, dynamic> json) {
+    final clientID = json['clientID'] as int?;
+    final clock = json['clock'] as int? ?? 0;
+    
+    final doc = Doc(clientID: clientID);
+    doc._clock = clock;
+    
+    final shared = json['shared'] as Map<String, dynamic>? ?? {};
+    
+    for (final entry in shared.entries) {
+      final key = entry.key;
+      final itemData = entry.value as Map<String, dynamic>;
+      final type = itemData['type'] as String;
+      final data = itemData['data'];
+      
+      switch (type) {
+        case 'YMap':
+          final ymap = YMap();
+          doc.share(key, ymap);
+          // Restore YMap data - simplified for now
+          if (data is Map<String, dynamic>) {
+            for (final mapEntry in data.entries) {
+              ymap.set(mapEntry.key, mapEntry.value);
+            }
+          }
+          break;
+        case 'YArray':
+          final yarray = YArray<dynamic>();
+          doc.share(key, yarray);
+          // Restore YArray data - simplified for now
+          if (data is List) {
+            for (final item in data) {
+              yarray.push(item);
+            }
+          }
+          break;
+        case 'YText':
+          final ytext = YText();
+          doc.share(key, ytext);
+          // Restore YText data - simplified for now
+          if (data is String) {
+            ytext.insert(0, data);
+          }
+          break;
+        default:
+          // For primitive types or unknown types
+          doc._share[key] = data;
+      }
+    }
+    
+    return doc;
+  }
+
+  /// Get an update/delta representing all changes since a given state
+  /// This is a simplified version - full Yjs has more complex update encoding
+  Map<String, dynamic> getUpdateSince(Map<int, int> remoteState) {
+    // Simplified: return full state for now
+    // In full implementation, this would compute minimal delta
+    return {
+      'type': 'full_state',
+      'state': toJSON(),
+      'vector_clock': {clientID.toString(): _clock},
+    };
+  }
+
+  /// Apply an update/delta to this document
+  void applyUpdate(Map<String, dynamic> update) {
+    final updateType = update['type'] as String;
+    
+    if (updateType == 'full_state') {
+      final state = update['state'] as Map<String, dynamic>;
+      final otherDoc = Doc.fromJSON(state);
+      
+      // Merge the other document's state into this one
+      // This is a simplified merge - full implementation would be more complex
+      for (final entry in otherDoc._share.entries) {
+        final key = entry.key;
+        final value = entry.value;
+        
+        if (!_share.containsKey(key)) {
+          share(key, value);
+        } else {
+          // For now, just replace - full implementation would merge
+          share(key, value);
+        }
+      }
+      
+      // Update clock to maximum
+      _clock = (_clock > otherDoc._clock) ? _clock : otherDoc._clock;
+    }
+  }
 }
 
 /// Base class for all CRDT types
@@ -347,6 +469,9 @@ class YMap extends AbstractType {
       content = ContentAny([value]);
     } else if (value is AbstractType) {
       content = ContentType(value);
+    } else if (value.runtimeType.toString() == 'GCounter' || 
+               value.runtimeType.toString() == 'PNCounter') {
+      content = ContentCounter(value);
     } else {
       throw ArgumentError('Unsupported value type: ${value.runtimeType}');
     }

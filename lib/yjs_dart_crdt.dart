@@ -7,3 +7,4 @@ library yjs_dart_crdt;
 // Core exports
 export 'src/crdt_types.dart' show Doc, Transaction, AbstractType, YMap, YArray, YText;
 export 'src/id.dart' show ID, createID;
+export 'src/counters.dart' show GCounter, PNCounter;

@@ -2,6 +2,102 @@ import 'package:test/test.dart';
 import '../lib/yjs_dart_crdt.dart';
 
 void main() {
+  group('Counter Tests', () {
+    test('GCounter should increment and merge correctly', () {
+      final counter1 = GCounter();
+      final counter2 = GCounter();
+
+      // Client 1 increments
+      counter1.increment(1, 5);
+      expect(counter1.value, equals(5));
+
+      // Client 2 increments  
+      counter2.increment(2, 3);
+      expect(counter2.value, equals(3));
+
+      // Merge counters
+      counter1.merge(counter2);
+      expect(counter1.value, equals(8)); // 5 + 3
+
+      // Merging should be idempotent
+      counter1.merge(counter2);
+      expect(counter1.value, equals(8));
+    });
+
+    test('GCounter should handle conflicting increments correctly', () {
+      final counter1 = GCounter();
+      final counter2 = GCounter();
+
+      // Both clients increment same client ID
+      counter1.increment(1, 5);
+      counter2.increment(1, 3); // Lower value
+
+      // After merge, should take higher value (grow-only property)
+      counter1.merge(counter2);
+      expect(counter1.value, equals(5));
+
+      counter2.merge(counter1);
+      expect(counter2.value, equals(5));
+    });
+
+    test('PNCounter should increment and decrement correctly', () {
+      final counter = PNCounter();
+
+      counter.increment(1, 10);
+      expect(counter.value, equals(10));
+
+      counter.decrement(1, 3);
+      expect(counter.value, equals(7)); // 10 - 3
+
+      counter.add(1, -2); // Should decrement by 2
+      expect(counter.value, equals(5)); // 7 - 2
+
+      counter.add(1, 5); // Should increment by 5
+      expect(counter.value, equals(10)); // 5 + 5
+    });
+
+    test('PNCounter should merge correctly', () {
+      final counter1 = PNCounter();
+      final counter2 = PNCounter();
+
+      // Client 1: +10, -3 = 7
+      counter1.increment(1, 10);
+      counter1.decrement(1, 3);
+      expect(counter1.value, equals(7));
+
+      // Client 2: +5, -1 = 4  
+      counter2.increment(2, 5);
+      counter2.decrement(2, 1);
+      expect(counter2.value, equals(4));
+
+      // After merge: (10+5) - (3+1) = 11
+      counter1.merge(counter2);
+      expect(counter1.value, equals(11));
+    });
+
+    test('Counters should serialize and deserialize correctly', () {
+      final gcounter = GCounter();
+      gcounter.increment(1, 5);
+      gcounter.increment(2, 3);
+
+      final json = gcounter.toJSON();
+      final restored = GCounter.fromJSON(json);
+      
+      expect(restored.value, equals(gcounter.value));
+      expect(restored, equals(gcounter));
+
+      final pncounter = PNCounter();
+      pncounter.increment(1, 10);
+      pncounter.decrement(2, 3);
+
+      final pnJson = pncounter.toJSON();
+      final pnRestored = PNCounter.fromJSON(pnJson);
+      
+      expect(pnRestored.value, equals(pncounter.value));
+      expect(pnRestored, equals(pncounter));
+    });
+  });
+
   group('YMap Tests', () {
     late Doc doc;
     late YMap map;
@@ -63,6 +159,37 @@ void main() {
       map.set('key', 'updated');
       expect(map.get('key'), equals('updated'));
       expect(map.size, equals(1)); // Size should remain 1
+    });
+
+    test('should support GCounter values', () {
+      final counter = GCounter();
+      counter.increment(doc.clientID, 5);
+      
+      map.set('progress', counter);
+      expect(map.has('progress'), isTrue);
+      
+      final retrieved = map.get('progress') as GCounter;
+      expect(retrieved.value, equals(5));
+      
+      // Increment the retrieved counter
+      retrieved.increment(doc.clientID, 3);
+      expect(retrieved.value, equals(8));
+    });
+
+    test('should support PNCounter values', () {
+      final counter = PNCounter();
+      counter.increment(doc.clientID, 10);
+      counter.decrement(doc.clientID, 3);
+      
+      map.set('balance', counter);
+      expect(map.has('balance'), isTrue);
+      
+      final retrieved = map.get('balance') as PNCounter;
+      expect(retrieved.value, equals(7)); // 10 - 3
+      
+      // Modify the retrieved counter
+      retrieved.add(doc.clientID, -2);
+      expect(retrieved.value, equals(5)); // 7 - 2
     });
   });
 

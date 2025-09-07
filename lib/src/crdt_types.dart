@@ -300,7 +300,8 @@ class Doc {
       type._integrate(this);
     }
     
-    // Track this as an operation for delta synchronization
+    // Increment clock and track this as an operation for delta synchronization
+    nextClock();
     _addOperation('share', {
       'key': key,
       'type': type.runtimeType.toString(),

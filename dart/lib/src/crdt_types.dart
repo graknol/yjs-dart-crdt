@@ -527,7 +527,7 @@ class Doc {
         'type': 'delta_update',
         'operations': operations,
         'hlc_vector': currentVector.map((k, v) => MapEntry(k, v.toJson())),
-        'vector_clock': getVectorClock(), // Legacy compatibility
+        'vector_clock': getVectorClock().map((k, v) => MapEntry(k.toString(), v)), // Legacy compatibility
         'nodeId': nodeId,
       };
     }
@@ -553,7 +553,7 @@ class Doc {
         'type': 'full_state',
         'state': toJSON(),
         'hlc_vector': currentVector.map((k, v) => MapEntry(k, v.toJson())),
-        'vector_clock': getVectorClock(), // Legacy compatibility
+        'vector_clock': getVectorClock().map((k, v) => MapEntry(k.toString(), v)), // Legacy compatibility
         'nodeId': nodeId,
       };
     }
@@ -562,7 +562,7 @@ class Doc {
     return {
       'type': 'no_changes',
       'hlc_vector': currentVector.map((k, v) => MapEntry(k, v.toJson())),
-      'vector_clock': getVectorClock(), // Legacy compatibility
+      'vector_clock': getVectorClock().map((k, v) => MapEntry(k.toString(), v)), // Legacy compatibility
       'nodeId': nodeId,
     };
   }
@@ -621,14 +621,21 @@ class Doc {
   void _applyDeltaUpdate(Map<String, dynamic> update) {
     final operations = update['operations'] as List<dynamic>;
     
+    print('DEBUG: Processing ${operations.length} operations');
+    
     for (final opData in operations) {
       final op = _Operation.fromJSON(opData as Map<String, dynamic>);
+      
+      print('DEBUG: Processing operation from ${op.nodeId} with HLC ${op.hlc.physicalTime}');
       
       // Skip operations we've already seen
       final localHLC = _hlcVector[op.nodeId];
       if (localHLC != null && !op.hlc.happensAfter(localHLC)) {
+        print('DEBUG: Skipping operation (already seen): local=${localHLC.physicalTime}, remote=${op.hlc.physicalTime}');
         continue;
       }
+      
+      print('DEBUG: Applying operation: ${op.type}');
       
       // Apply the operation based on its type
       _applyOperation(op);
@@ -680,6 +687,8 @@ class Doc {
   
   /// Apply a specific operation to the document state
   void _applyOperation(_Operation operation) {
+    print('DEBUG: Applying operation: ${operation.type} with data: ${operation.data}');
+    
     switch (operation.type) {
       case 'share':
         final key = operation.data['key'] as String;
@@ -807,6 +816,41 @@ class Doc {
           }
         }
         break;
+        break;
+        
+      case 'text_insert':
+        final targetKey = operation.data['target'] as String;
+        final index = operation.data['index'] as int;
+        final text = operation.data['text'] as String;
+        
+        // The target for text operations is 'text', but we need to find the
+        // YText instance. For now, find the first YText in shared types.
+        // In a more complete implementation, we'd use the target key properly.
+        for (final entry in _share.entries) {
+          if (entry.value is YText) {
+            final ytext = entry.value as YText;
+            // Apply the remote insert operation
+            ytext._applyRemoteInsert(index, text, operation.hlc);
+            break;
+          }
+        }
+        break;
+        
+      case 'text_delete':
+        final targetKey = operation.data['target'] as String;
+        final index = operation.data['index'] as int;
+        final deleteCount = operation.data['deleteCount'] as int;
+        
+        // Find the YText instance in shared types
+        for (final entry in _share.entries) {
+          if (entry.value is YText) {
+            final ytext = entry.value as YText;
+            // Apply the remote delete operation
+            ytext._applyRemoteDelete(index, deleteCount, operation.hlc);
+            break;
+          }
+        }
+        break;
         
       default:
         // Handle other operation types as they are implemented
@@ -870,7 +914,7 @@ class Doc {
       'hlc': _currentHLC.toJson(),
       'clock': _currentHLC.physicalTime, // Legacy compatibility
       'hlc_vector': getHLCVector().map((k, v) => MapEntry(k, v.toJson())),
-      'vector_clock': getVectorClock(), // Legacy compatibility
+      'vector_clock': getVectorClock().map((k, v) => MapEntry(k.toString(), v)), // Legacy compatibility
       'operation_history_size': _operationHistory.length,
       'shared_types': _share.keys.toList(),
     };
@@ -1452,22 +1496,32 @@ class YText extends AbstractType {
       'text': text,
     });
 
-    // Find position to insert
+    // YATA approach: Insert each character as a separate item
+    // This ensures proper conflict resolution for concurrent edits
     final position = _findPosition(index);
+    Item? currentLeft = position.left;
+    Item? currentRight = position.right;
 
-    final content = ContentString(text);
-    final item = Item(
-      createID(transaction.doc.nextHLC()),
-      position.left,
-      position.left?.lastId,
-      position.right,
-      position.right?.id,
-      this,
-      null,
-      content,
-    );
+    for (int i = 0; i < text.length; i++) {
+      final char = text[i];
+      final content = ContentString(char); // Single character
+      final item = Item(
+        createID(transaction.doc.nextHLC()),
+        currentLeft,
+        currentLeft?.lastId,
+        currentRight,
+        currentRight?.id,
+        this,
+        null,
+        content,
+      );
 
-    item.integrate(transaction, 0);
+      item.integrate(transaction, 0);
+      
+      // Update pointers for next character
+      currentLeft = item;
+      // currentRight stays the same - all characters insert before it
+    }
   }
 
   void _deleteText(Transaction transaction, int index, int deleteCount) {
@@ -1516,36 +1570,132 @@ class YText extends AbstractType {
 
     int currentIndex = 0;
     Item? current = _start;
+    Item? previousItem;
 
     while (current != null) {
       if (!current.deleted &&
           current.countable &&
           current.content is ContentString) {
         final content = current.content as ContentString;
-        final nextIndex = currentIndex + content.str.length;
+        final itemStartIndex = currentIndex;
+        final itemEndIndex = currentIndex + content.str.length;
 
-        if (nextIndex >= index) {
-          // Insert within or at the end of this item
-          if (nextIndex == index) {
+        if (index <= itemEndIndex) {
+          if (index == itemStartIndex) {
+            // Insert at the beginning of this item
+            return _TextPosition(previousItem, current);
+          } else if (index == itemEndIndex) {
             // Insert at the end of this item
             return _TextPosition(current, current.right);
           } else {
-            // Insert within this item - would need to split in full implementation
+            // Insert within this item - we need to split it
+            // For now, let's insert at the end of this item as a workaround
+            // TODO: Implement proper item splitting
             return _TextPosition(current, current.right);
           }
         }
 
-        currentIndex = nextIndex;
+        currentIndex = itemEndIndex;
       }
+      previousItem = current;
       current = current.right;
     }
 
-    // Insert at the end
-    Item? lastItem = _start;
-    while (lastItem?.right != null) {
-      lastItem = lastItem?.right;
+    // Insert at the very end
+    return _TextPosition(previousItem, null);
+  }
+  
+  /// Apply a remote insert operation (used during synchronization)
+  void _applyRemoteInsert(int index, String text, HLC remoteHLC) {
+    // Apply remote insert without creating new transaction
+    // This prevents infinite recursion during sync
+    
+    print('DEBUG: _applyRemoteInsert called with index=$index, text="$text"');
+    
+    if (index > length) {
+      index = length; // Clamp to valid range
     }
-    return _TextPosition(lastItem, null);
+    
+    final position = _findPosition(index);
+    Item? currentLeft = position.left;
+    Item? currentRight = position.right;
+
+    for (int i = 0; i < text.length; i++) {
+      final char = text[i];
+      final content = ContentString(char);
+      final item = Item(
+        createID(remoteHLC.increment()), // Use remote HLC
+        currentLeft,
+        currentLeft?.lastId,
+        currentRight,
+        currentRight?.id,
+        this,
+        null,
+        content,
+      );
+
+      // Direct integration without transaction to avoid recursion
+      _integrateItemDirectly(item);
+      
+      // Update pointers for next character
+      currentLeft = item;
+    }
+    
+    print('DEBUG: After _applyRemoteInsert, text is now: "${toString()}"');
+  }
+  
+  /// Apply a remote delete operation (used during synchronization)
+  void _applyRemoteDelete(int index, int deleteCount, HLC remoteHLC) {
+    // Apply remote delete without creating new transaction
+    if (index >= length || deleteCount <= 0) return;
+
+    final endIndex = (index + deleteCount).clamp(0, length);
+    int currentIndex = 0;
+    Item? current = _start;
+
+    while (current != null && currentIndex < endIndex) {
+      if (!current.deleted &&
+          current.countable &&
+          current.content is ContentString) {
+        final content = current.content as ContentString;
+        final itemStart = currentIndex;
+        final itemEnd = currentIndex + content.str.length;
+
+        if (itemStart < endIndex && itemEnd > index) {
+          // This item overlaps with the deletion range
+          // For character-level operations, just mark as deleted
+          current.deleted = true;
+          _length--;
+        }
+
+        currentIndex = itemEnd;
+      }
+      current = current.right;
+    }
+  }
+  
+  /// Direct integration without transaction (used during sync)
+  void _integrateItemDirectly(Item item) {
+    // Simplified integration for remote operations
+    if (item.left != null) {
+      item.right = item.left!.right;
+      item.left!.right = item;
+      if (item.right != null) {
+        item.right!.left = item;
+      }
+    } else {
+      // Insert at start
+      item.right = _start;
+      _start = item;
+      if (item.right != null) {
+        item.right!.left = item;
+      }
+    }
+
+    // Update length
+    if (item.countable && !item.deleted) {
+      _length += item.length;
+    }
   }
 }
 

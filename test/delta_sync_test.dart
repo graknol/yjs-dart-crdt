@@ -4,8 +4,8 @@ import '../lib/yjs_dart_crdt.dart';
 void main() {
   group('Delta Synchronization Tests', () {
     test('Should generate delta updates instead of full state', () {
-      final doc1 = Doc(clientID: 1);
-      final doc2 = Doc(clientID: 2);
+      final doc1 = Doc(clientID:1);
+      final doc2 = Doc(clientID:2);
       
       // Initial state in doc1
       final map1 = YMap();
@@ -35,8 +35,8 @@ void main() {
     });
 
     test('Should handle incremental delta updates correctly', () {
-      final doc1 = Doc(clientID: 1);
-      final doc2 = Doc(clientID: 2);
+      final doc1 = Doc(clientID:1);
+      final doc2 = Doc(clientID:2);
       
       // Set up initial state
       final map1 = YMap();

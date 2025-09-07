@@ -53,28 +53,28 @@ void main() {
   print('\n--- Nested Types Example ---');
   final nestedMap = YMap();
   final nestedArray = YArray<dynamic>();
-  
+
   nestedArray.push('item1');
   nestedArray.push('item2');
-  
+
   map.set('nested_array', nestedArray);
   map.set('nested_map', nestedMap);
-  
+
   nestedMap.set('inner_key', 'inner_value');
-  
+
   print('Nested structure: ${map.toJSON()}');
 
   // Example 5: Operations and state
   print('\n--- Operations Example ---');
   print('Document state (clock): ${doc.getState()}');
-  
+
   // Perform more operations
   doc.transact((transaction) {
     map.set('batch1', 'value1');
     map.set('batch2', 'value2');
     array.push('batched_item');
   });
-  
+
   print('After batched operations - Document state: ${doc.getState()}');
   print('Final map: ${map.toJSON()}');
   print('Final array: ${array.toJSON()}');

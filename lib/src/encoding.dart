@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'crdt_types.dart';
 
 /// Binary encoding utilities for CRDT documents
-/// 
+///
 /// Provides compact binary representation compared to JSON
 class BinaryEncoder {
   static const int _TYPE_DOC = 0;
@@ -23,40 +23,40 @@ class BinaryEncoder {
   /// Encode a document to binary format
   static Uint8List encodeDocument(Doc doc) {
     final buffer = BytesBuilder();
-    
+
     // Write header
     buffer.addByte(_TYPE_DOC);
     _writeInt32(buffer, doc.clientID);
     _writeInt32(buffer, doc.getState());
-    
+
     // Write shared types count
     _writeInt32(buffer, doc.sharedTypes.length);
-    
+
     // Write each shared type
     for (final entry in doc.sharedTypes.entries) {
       _writeString(buffer, entry.key);
       _encodeValue(buffer, entry.value);
     }
-    
+
     return buffer.toBytes();
   }
 
   /// Decode a document from binary format
   static Doc decodeDocument(Uint8List data) {
     final reader = _BinaryReader(data);
-    
+
     // Read header
     final docType = reader.readByte();
     if (docType != _TYPE_DOC) {
       throw FormatException('Invalid document format');
     }
-    
+
     final clientID = reader.readInt32();
     final clock = reader.readInt32();
-    
+
     final doc = Doc(clientID: clientID);
-    doc._clock = clock;
-    
+    doc.setClock(clock);
+
     // Read shared types
     final sharedCount = reader.readInt32();
     for (int i = 0; i < sharedCount; i++) {
@@ -64,7 +64,7 @@ class BinaryEncoder {
       final value = _decodeValue(reader);
       doc.share(key, value);
     }
-    
+
     return doc;
   }
 
@@ -73,15 +73,15 @@ class BinaryEncoder {
     // Binary encoding
     final binaryData = encodeDocument(doc);
     final binarySize = binaryData.length;
-    
+
     // JSON encoding
     final jsonString = jsonEncode(doc.toJSON());
     final jsonSize = utf8.encode(jsonString).length;
-    
+
     // JSON + gzip (simulated by measuring compression potential)
     // Note: Dart does not have built-in gzip in core, so we estimate
     final jsonGzipSize = _estimateGzipSize(jsonString);
-    
+
     return {
       'binary': binarySize,
       'json': jsonSize,
@@ -90,7 +90,7 @@ class BinaryEncoder {
   }
 
   // Internal encoding methods
-  
+
   static void _encodeValue(BytesBuilder buffer, dynamic value) {
     if (value == null) {
       buffer.addByte(_TYPE_NULL);
@@ -143,7 +143,7 @@ class BinaryEncoder {
 
   static dynamic _decodeValue(_BinaryReader reader) {
     final type = reader.readByte();
-    
+
     switch (type) {
       case _TYPE_NULL:
         return null;

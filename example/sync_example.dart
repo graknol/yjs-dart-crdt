@@ -13,7 +13,7 @@ void main() {
   final client1Map = YMap();
   final client1Progress = GCounter();
   final client1Hours = PNCounter();
-  
+
   client1.share('project', client1Map);
   client1Map.set('name', 'Mobile App Project');
   client1Map.set('progress', client1Progress);
@@ -25,7 +25,7 @@ void main() {
   // Client 1 makes some progress
   client1Progress.increment(client1.clientID, 25); // 25% progress
   client1Hours.increment(client1.clientID, 8); // 8 hours logged
-  
+
   print('Client 1 progress: ${client1Progress.value}%');
   print('Client 1 hours: ${client1Hours.value} hours');
 
@@ -68,24 +68,24 @@ void main() {
 
   // Simulate synchronization back to Client 1
   print('\\n--- Synchronization Back to Client 1 ---');
-  
+
   // Get Client 2's updates
   final client2Update = client2FromJson.getUpdateSince({});
-  
+
   // Apply updates to Client 1
   client1.applyUpdate(client2Update);
-  
+
   // Check Client 1's final state
   final finalProgress = client1Map.get('progress') as GCounter;
   final finalHours = client1Map.get('hours') as PNCounter;
-  
+
   print('Final synchronized state:');
   print('  Progress: ${finalProgress.value}%');
   print('  Hours: ${finalHours.value} hours');
 
   // Demonstrate counter merging directly
   print('\\n--- Direct Counter Merging Example ---');
-  
+
   // Create separate counters for each client
   final clientACounter = PNCounter();
   final clientBCounter = PNCounter();
@@ -93,13 +93,13 @@ void main() {
 
   // Each client works independently
   clientACounter.increment(1001, 10); // Client A: +10
-  clientACounter.decrement(1001, 2);  // Client A: -2 (net: +8)
+  clientACounter.decrement(1001, 2); // Client A: -2 (net: +8)
 
   clientBCounter.increment(2002, 15); // Client B: +15
-  clientBCounter.decrement(2002, 5);  // Client B: -5 (net: +10)
+  clientBCounter.decrement(2002, 5); // Client B: -5 (net: +10)
 
   clientCCounter.increment(3003, 20); // Client C: +20
-  clientCCounter.decrement(3003, 8);  // Client C: -8 (net: +12)
+  clientCCounter.decrement(3003, 8); // Client C: -8 (net: +12)
 
   print('Before merge:');
   print('  Client A counter: ${clientACounter.value}');
@@ -119,24 +119,27 @@ void main() {
   alternativeMerge.merge(clientACounter);
   alternativeMerge.merge(clientBCounter);
 
-  print('  Alternative merge order: ${alternativeMerge.value}'); // Should also be 30
+  print(
+      '  Alternative merge order: ${alternativeMerge.value}'); // Should also be 30
 
   // Demonstrate idempotent merging
   mergedCounter.merge(clientACounter); // Merge again
-  print('  After redundant merge: ${mergedCounter.value}'); // Should still be 30
+  print(
+      '  After redundant merge: ${mergedCounter.value}'); // Should still be 30
 
   print('\\n--- Bandwidth Analysis ---');
-  
+
   // Create a more complex document for bandwidth testing
   final complexDoc = Doc(clientID: 9999);
   final complexMap = YMap();
   complexDoc.share('data', complexMap);
 
   // Add various data types
-  complexMap.set('string_field', 'This is a long string with repeated data data data data data');
+  complexMap.set('string_field',
+      'This is a long string with repeated data data data data data');
   complexMap.set('number_field', 42);
   complexMap.set('bool_field', true);
-  
+
   final progressCounters = <String, GCounter>{};
   for (int i = 0; i < 10; i++) {
     final counter = GCounter();
@@ -150,10 +153,10 @@ void main() {
   for (final entry in sizes.entries) {
     print('  ${entry.key}: ${entry.value} bytes');
   }
-  
+
   final jsonSize = sizes['json']!;
   final binarySize = sizes['binary']!;
   final savings = ((jsonSize - binarySize) / jsonSize * 100).round();
-  
+
   print('Binary vs JSON savings: $savings%');
 }

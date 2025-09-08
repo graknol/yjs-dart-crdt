@@ -5,7 +5,7 @@
 
 
 
-import 'polyfill.dart';
+import '../polyfill.dart';
 
 class ID {
   constructor(dynamic client, dynamic clock)   constructor (client, clock) {

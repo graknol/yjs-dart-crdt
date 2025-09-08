@@ -75,21 +75,41 @@ class YataItem {
     YataItem? actualLeft = origin != null ? parent._findItemById(origin!) : null;
     YataItem? actualRight = rightOrigin != null ? parent._findItemById(rightOrigin!) : null;
     
-    // Step 2: Handle concurrent operations (YATA core algorithm)
-    if (actualLeft != null && actualRight != null) {
-      // Find concurrent items between left and right
-      final conflicts = _findConflicts(actualLeft, actualRight);
-      if (conflicts.isNotEmpty) {
-        final position = _resolveYataConflict([this, ...conflicts]);
-        actualLeft = position['left'];
-        actualRight = position['right'];
+    // Step 2: YATA conflict resolution algorithm
+    // This is the core of YATA - find the correct insertion point
+    YataItem? insertLeft = actualLeft;
+    YataItem? insertRight = actualRight;
+    
+    if (actualLeft != null) {
+      // Start scanning from actualLeft.right
+      insertRight = actualLeft.right;
+      
+      // Scan forward to find the correct insertion point
+      while (insertRight != null && insertRight != actualRight) {
+        // Check if this item conflicts (same origin and rightOrigin)
+        if (insertRight.origin == origin && insertRight.rightOrigin == rightOrigin) {
+          // YATA deterministic ordering: compare (clientId, clock)
+          if (_shouldInsertBefore(insertRight)) {
+            // Insert before this conflicting item
+            break;
+          } else {
+            // Continue scanning past this item
+            insertLeft = insertRight;
+            insertRight = insertRight.right;
+          }
+        } else {
+          // No conflict, continue scanning
+          insertLeft = insertRight;
+          insertRight = insertRight.right;
+        }
       }
     }
     
-    // Step 3: Insert at determined position
-    left = actualLeft;
-    right = actualRight;
+    // Step 3: Insert at resolved position
+    left = insertLeft;
+    right = insertRight;
     
+    // Update linked list pointers
     if (left != null) {
       left!.right = this;
     } else {
@@ -102,6 +122,15 @@ class YataItem {
     
     integrated = true;
     parent._length++;
+  }
+  
+  /// YATA ordering: should this item be inserted before the other item?
+  bool _shouldInsertBefore(YataItem other) {
+    // YATA deterministic ordering: (clientId, clock) lexicographic comparison
+    if (id.client != other.id.client) {
+      return id.client < other.id.client;
+    }
+    return id.clock < other.id.clock;
   }
   
   /// Find concurrent operations between left and right
@@ -235,6 +264,7 @@ class YataText {
   
   /// Apply operations from another client (synchronization)
   void applyOperations(List<YataItem> operations) {
+    // Sort operations by ID to ensure deterministic processing
     operations.sort((a, b) => compareIDs(a.id, b.id));
     
     for (final op in operations) {
@@ -245,8 +275,10 @@ class YataText {
           origin: op.origin,
           rightOrigin: op.rightOrigin,
           parent: this,
-          content: op.content,
+          content: ContentString(op.content.str), // Create new content instance
         );
+        
+        // Important: Use the YATA integration algorithm
         localItem.integrate();
       }
     }
@@ -286,13 +318,15 @@ void testYataConvergence() {
   final doc1 = YataText(1);
   final doc2 = YataText(2);
   
-  // Initial state
+  // Initialize both documents with same content from client 1
   doc1.insert(0, "Hello World");
-  doc2.insert(0, "Hello World");
   
-  print('   Initial: "${doc1.toString()}"');
+  // Sync the initial state to doc2 (important for proper YATA)
+  doc2.applyOperations(doc1.getOperations());
   
-  // Concurrent operations
+  print('   Initial: "${doc1.toString()}" (both docs synchronized)');
+  
+  // Concurrent operations at same position
   doc1.insert(6, "Beautiful ");  // Client 1 at position 6
   doc2.insert(6, "Amazing ");    // Client 2 at same position 6
   
@@ -300,19 +334,30 @@ void testYataConvergence() {
   print('   Doc1: "${doc1.toString()}"');
   print('   Doc2: "${doc2.toString()}"');
   
-  // Synchronize: apply doc1's operations to doc2 and vice versa
-  final ops1 = doc1.getOperations();
-  final ops2 = doc2.getOperations();
+  // Synchronize: apply operations to both documents
+  final newOps1 = doc1.getOperations().where((op) => op.id.client == 1 && op.id.clock > 11).toList();
+  final newOps2 = doc2.getOperations().where((op) => op.id.client == 2).toList();
   
-  doc1.applyOperations(ops2);
-  doc2.applyOperations(ops1);
+  doc2.applyOperations(newOps1); // Apply doc1's new ops to doc2
+  doc1.applyOperations(newOps2); // Apply doc2's ops to doc1
   
   print('   After synchronization:');
   print('   Doc1: "${doc1.toString()}"');
   print('   Doc2: "${doc2.toString()}"');
   
-  assert(doc1.toString() == doc2.toString(), 'Documents did not converge!');
-  print('   ✅ YATA convergence verified');
+  // Both documents must be identical after sync
+  final result1 = doc1.toString();
+  final result2 = doc2.toString();
+  
+  if (result1 != result2) {
+    print('   ❌ CONVERGENCE FAILED - Documents differ!');
+    print('   Expected: identical results');
+    print('   Got: Doc1="$result1", Doc2="$result2"');
+  } else {
+    print('   ✅ Perfect YATA convergence achieved: "$result1"');
+  }
+  
+  assert(result1 == result2, 'Documents must converge to identical state!');
 }
 
 /// Test that YATA prevents character interleaving
@@ -358,13 +403,18 @@ void testMultiClientScenario() {
   final doc2 = YataText(2); 
   final doc3 = YataText(3);
   
-  // Initial text
+  // Initialize all documents with same base content from client 1
   const initial = "The quick fox jumps";
   doc1.insert(0, initial);
-  doc2.insert(0, initial);
-  doc3.insert(0, initial);
   
-  // Concurrent operations
+  // Sync base content to all documents
+  final baseOps = doc1.getOperations();
+  doc2.applyOperations(baseOps);
+  doc3.applyOperations(baseOps);
+  
+  print('   Base synchronized: "$initial"');
+  
+  // Concurrent operations from different clients
   doc1.insert(10, "brown ");        // "The quick brown fox jumps"
   doc2.insert(19, " over the lazy dog");  // "The quick fox jumps over the lazy dog"  
   doc3.insert(4, "very ");          // "The very quick fox jumps"
@@ -374,32 +424,39 @@ void testMultiClientScenario() {
   print('   Doc2: "${doc2.toString()}"');
   print('   Doc3: "${doc3.toString()}"');
   
-  // Full synchronization
-  final ops1 = doc1.getOperations();
-  final ops2 = doc2.getOperations();
-  final ops3 = doc3.getOperations();
+  // Full synchronization - exchange all new operations
+  final newOps1 = doc1.getOperations().where((op) => op.id.client == 1 && op.id.clock > baseOps.length).toList();
+  final newOps2 = doc2.getOperations().where((op) => op.id.client == 2).toList();
+  final newOps3 = doc3.getOperations().where((op) => op.id.client == 3).toList();
   
-  doc1.applyOperations(ops2);
-  doc1.applyOperations(ops3);
+  // Apply all operations to all documents
+  doc1.applyOperations(newOps2);
+  doc1.applyOperations(newOps3);
   
-  doc2.applyOperations(ops1);
-  doc2.applyOperations(ops3);
+  doc2.applyOperations(newOps1);
+  doc2.applyOperations(newOps3);
   
-  doc3.applyOperations(ops1);
-  doc3.applyOperations(ops2);
+  doc3.applyOperations(newOps1);
+  doc3.applyOperations(newOps2);
   
   print('   After full synchronization:');
-  print('   Doc1: "${doc1.toString()}"');
-  print('   Doc2: "${doc2.toString()}"');
-  print('   Doc3: "${doc3.toString()}"');
-  
   final result1 = doc1.toString();
   final result2 = doc2.toString();
   final result3 = doc3.toString();
   
-  assert(result1 == result2 && result2 == result3, 'All documents must converge');
+  print('   Doc1: "$result1"');
+  print('   Doc2: "$result2"');
+  print('   Doc3: "$result3"');
   
-  print('   ✅ Multi-client convergence achieved');
+  if (result1 == result2 && result2 == result3) {
+    print('   ✅ Perfect multi-client convergence: "$result1"');
+  } else {
+    print('   ❌ Multi-client convergence failed!');
+    print('   Expected: all documents identical');
+    print('   Got different results');
+  }
+  
+  assert(result1 == result2 && result2 == result3, 'All documents must converge to identical state');
 }
 
 /// Test complex interleaving scenario

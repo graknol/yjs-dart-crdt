@@ -241,6 +241,37 @@ dynamic createMaybeAttrRange(dynamic clock, dynamic len, bool exists, dynamic at
   return {'clock': clock, 'len': len, 'exists': exists, 'attrs': attrs};
 }
 
+// =============================================================================  
+// YATA ALGORITHM SUPPORT
+// =============================================================================
+
+/// Create placeholder item for YATA integration
+dynamic createPlaceholderItem(dynamic originId) {
+  // TODO: This should look up the actual item from the document store
+  // For now, return a mock item that can be used for testing
+  return {'id': originId, 'isPlaceholder': true};
+}
+
+/// Find item by ID in document structure
+dynamic findItemById(dynamic id, dynamic document) {
+  // TODO: Implement proper document traversal to find item by ID
+  // This is a critical function for YATA conflict resolution
+  return null; // Placeholder
+}
+
+/// Get next clock value for client
+int getNextClock(dynamic store, int clientId) {
+  // TODO: Implement proper clock management
+  // For now return a simple incrementing value
+  return DateTime.now().millisecondsSinceEpoch % 10000;
+}
+
+/// Get current state/clock for client
+int getState(dynamic store, int clientId) {
+  // TODO: Implement proper state tracking
+  return getNextClock(store, clientId);
+}
+
 // =============================================================================
 // ENCODING/DECODING UTILITIES
 // =============================================================================

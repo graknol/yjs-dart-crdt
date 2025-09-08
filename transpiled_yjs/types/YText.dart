@@ -8,18 +8,18 @@
 
 
 
-import 'polyfill.dart';
+import '../polyfill.dart';
 
-const dynamic equalAttrs = (a, b) => a === b || (typeof a === 'object' && typeof b === 'object' && a && b && object.equalFlat(a, b));
+bool equalAttrs(dynamic a, dynamic b) => a == b || (a is Map && b is Map && a != null && b != null);
 
 class ItemTextListPosition {
-  constructor(dynamic left, dynamic right, int index, dynamic currentAttributes, dynamic am)   constructor (left, right, index, currentAttributes, am) {
-    this.left = left
-    this.right = right
-    this.index = index
-    this.currentAttributes = currentAttributes
-    this.am = am
-  }
+  dynamic left;
+  dynamic right;
+  int index;
+  Map<String, dynamic> currentAttributes;
+  dynamic am;
+  
+  ItemTextListPosition(this.left, this.right, this.index, this.currentAttributes, this.am);
 
 
   void forward()   forward () {

@@ -643,6 +643,7 @@ class Doc {
       int getPriority(String type) {
         switch (type) {
           case 'share': return 0;
+          case 'char_insert':
           case 'text_insert':
           case 'text_delete':
           case 'map_set':
@@ -862,6 +863,24 @@ class Doc {
           }
         }
         break;
+        
+      case 'char_insert':
+        final targetKey = operation.data['target'] as String;
+        final char = operation.data['char'] as String;
+        final itemIdStr = operation.data['item_id'] as String;
+        final originLeft = operation.data['origin_left'] as String?;
+        final originRight = operation.data['origin_right'] as String?;
+        
+        // Find the YText instance
+        for (final entry in _share.entries) {
+          if (entry.value is YText) {
+            final ytext = entry.value as YText;
+            // Apply character insertion with exact ID reconstruction
+            ytext._applyRemoteCharInsert(char, itemIdStr, operation.hlc, 
+              originLeft: originLeft, originRight: originRight);
+            break;
+          }
+        }
         break;
         
       case 'text_insert':
@@ -1538,18 +1557,11 @@ class YText extends AbstractType {
       throw RangeError('Index $index out of range (0-$length)');
     }
 
-    // Track this operation for delta synchronization with YATA origins
+    // Find position for insertion
     final position = _findPosition(index);
-    transaction.trackOperation('text_insert', {
-      'target': 'text',
-      'index': index,
-      'text': text,
-      'origin_left': position.left?.id.toString(),
-      'origin_right': position.right?.id.toString(),
-    });
 
     // YATA approach: Insert each character as a separate item
-    // This ensures proper conflict resolution for concurrent edits
+    // Each character gets its own operation for proper YATA sync
     Item? currentLeft = position.left;
     Item? currentRight = position.right;
 
@@ -1568,11 +1580,22 @@ class YText extends AbstractType {
       );
 
       item.integrate(transaction, 0);
+
+      // Track each character insertion as a separate operation with its exact ID
+      transaction.trackOperation('char_insert', {
+        'target': 'text',
+        'char': char,
+        'item_id': item.id.toString(),
+        'origin_left': item.origin?.toString(),
+        'origin_right': item.rightOrigin?.toString(),
+      });
       
       // Update pointers for next character - characters form a contiguous sequence
       currentLeft = item;
-      // currentRight stays null for subsequent characters in same operation
-      currentRight = null;
+      // Clear right origin for subsequent characters in same operation
+      if (i == 0) {
+        currentRight = null;
+      }
     }
   }
 
@@ -1615,6 +1638,7 @@ class YText extends AbstractType {
   }
 
   /// Find the position (left, right items) for inserting at index
+  /// Updated for single-character items (YATA approach)
   _TextPosition _findPosition(int index) {
     if (index == 0) {
       return _TextPosition(null, _start);
@@ -1622,39 +1646,29 @@ class YText extends AbstractType {
 
     int currentIndex = 0;
     Item? current = _start;
-    Item? previousItem;
 
     while (current != null) {
-      if (!current.deleted &&
-          current.countable &&
-          current.content is ContentString) {
-        final content = current.content as ContentString;
-        final itemStartIndex = currentIndex;
-        final itemEndIndex = currentIndex + content.str.length;
-
-        if (index <= itemEndIndex) {
-          if (index == itemStartIndex) {
-            // Insert at the beginning of this item
-            return _TextPosition(previousItem, current);
-          } else if (index == itemEndIndex) {
-            // Insert at the end of this item
-            return _TextPosition(current, current.right);
-          } else {
-            // Insert within this item - we need to split it
-            // For now, let's insert at the end of this item as a workaround
-            // TODO: Implement proper item splitting
-            return _TextPosition(current, current.right);
-          }
+      if (!current.deleted && current.countable && current.content is ContentString) {
+        // Since we're using single characters, each item represents exactly one position
+        if (currentIndex + 1 == index) {
+          // Insert after this character
+          return _TextPosition(current, current.right);
         }
-
-        currentIndex = itemEndIndex;
+        currentIndex++;
       }
-      previousItem = current;
       current = current.right;
     }
 
     // Insert at the very end
-    return _TextPosition(previousItem, null);
+    Item? lastItem = null;
+    current = _start;
+    while (current != null) {
+      if (!current.deleted && current.countable && current.content is ContentString) {
+        lastItem = current;
+      }
+      current = current.right;
+    }
+    return _TextPosition(lastItem, null);
   }
   
   /// Apply a remote insert operation (used during synchronization)
@@ -1677,39 +1691,106 @@ class YText extends AbstractType {
     }
 
     // Create and integrate items for each character using proper YATA
+    Item? currentLeft = leftOrigin; // Start with the original left origin
+    Item? currentRight = rightOrigin; // Only first char uses original right origin
+    
     for (int i = 0; i < text.length; i++) {
       final char = text[i];
       final content = ContentString(char);
       
-      // Create item with origins (only first char uses original origins)
+      // Create item with origins
       final item = Item(
         createID(remoteHLC.increment()),
         null, // Will be set by integrate
-        (i == 0) ? leftOrigin?.lastId ?? leftOrigin?.id : null,
+        currentLeft?.lastId ?? currentLeft?.id,
         null, // Will be set by integrate  
-        (i == 0) ? rightOrigin?.id : null,
+        (i == 0) ? currentRight?.id : null, // Only first char has right origin
         this,
         null,
         content,
       );
 
       // Integrate using YATA algorithm
-      _integrateItem(item, leftOrigin, rightOrigin);
+      _integrateItem(item, currentLeft, (i == 0) ? currentRight : null);
       
-      // For subsequent characters in same insertion, the previous character becomes left origin
+      // For subsequent characters, previous character becomes left origin
+      currentLeft = item;
+      // Clear right origin for subsequent characters in same insertion
       if (i == 0) {
-        leftOrigin = item;
-        rightOrigin = null; // Clear right origin for subsequent chars
-      } else {
-        leftOrigin = item;
+        currentRight = null;
       }
     }
     
     print('DEBUG: After _applyRemoteInsert, text is now: "${toString()}"');
   }
   
+  /// Apply a remote character insert operation with exact ID reconstruction
+  void _applyRemoteCharInsert(String char, String itemIdStr, HLC remoteHLC, {String? originLeft, String? originRight}) {
+    print('DEBUG: _applyRemoteCharInsert called with char="$char", itemId=$itemIdStr, originLeft=$originLeft, originRight=$originRight');
+    
+    // Parse the item ID to reconstruct the exact same ID
+    final itemId = _parseItemId(itemIdStr);
+    if (itemId == null) {
+      print('DEBUG: Failed to parse item ID: $itemIdStr');
+      return;
+    }
+    
+    // Find origin items
+    Item? leftOrigin;
+    Item? rightOrigin;
+    
+    if (originLeft != null) {
+      leftOrigin = _findItemById(originLeft);
+    }
+    
+    if (originRight != null) {
+      rightOrigin = _findItemById(originRight);
+    }
+    
+    // Create the item with the exact same ID as the original
+    final content = ContentString(char);
+    final item = Item(
+      itemId,
+      null, // Will be set by integrate
+      leftOrigin?.lastId ?? leftOrigin?.id,
+      null, // Will be set by integrate  
+      rightOrigin?.id,
+      this,
+      null,
+      content,
+    );
+
+    // Integrate using YATA algorithm
+    _integrateItem(item, leftOrigin, rightOrigin);
+    
+    print('DEBUG: After _applyRemoteCharInsert, text is now: "${toString()}"');
+  }
+  
+  /// Parse an item ID string back to an ID object
+  ID? _parseItemId(String idString) {
+    // Expected format: "ID(HLC(physicalTime:logicalCounter@nodeId))"
+    final match = RegExp(r'ID\(HLC\((\d+):(\d+)@([^)]+)\)\)').firstMatch(idString);
+    if (match == null) {
+      return null;
+    }
+    
+    final physicalTime = int.parse(match.group(1)!);
+    final logicalCounter = int.parse(match.group(2)!);
+    final nodeId = match.group(3)!;
+    
+    final hlc = HLC(
+      physicalTime: physicalTime,
+      logicalCounter: logicalCounter,
+      nodeId: nodeId,
+    );
+    
+    return createID(hlc);
+  }
+  
   /// Integrate an item using YATA algorithm (based on Y.js)
   void _integrateItem(Item item, Item? leftOrigin, Item? rightOrigin) {
+    print('DEBUG: _integrateItem called for "${(item.content as ContentString).str}" with leftOrigin=${leftOrigin?.id} rightOrigin=${rightOrigin?.id}');
+    
     // Find the position where this item should be inserted
     Item? left = leftOrigin;
     Item? right = rightOrigin;
@@ -1717,10 +1798,12 @@ class YText extends AbstractType {
     // If we have left origin, start from its right neighbor
     if (left != null) {
       right = left.right;
+      print('DEBUG: Using left origin, setting right to left.right=${right?.id}');
     }
     // If no left origin but we have right origin, find the leftmost item
     else if (right != null) {
       left = null;
+      print('DEBUG: Using right origin, setting left to null');
       // Find leftmost item by traversing left until we find null
       Item? current = right;
       while (current?.left != null) {
@@ -1734,7 +1817,10 @@ class YText extends AbstractType {
     else {
       left = null;
       right = _start;
+      print('DEBUG: No origins, inserting at start');
     }
+    
+    print('DEBUG: Before conflict resolution: left=${left?.id}, right=${right?.id}');
     
     // Now we need to resolve conflicts using YATA algorithm
     // This is a simplified version - full Y.js has more complex conflict resolution
@@ -1744,8 +1830,11 @@ class YText extends AbstractType {
       Item? conflicting = left.right;
       
       while (conflicting != null && conflicting != right) {
+        print('DEBUG: Checking conflict with item "${(conflicting.content as ContentString).str}" id=${conflicting.id}');
+        
         // If this conflicting item has same origins as our item
         if (_hasSameOrigins(item, conflicting)) {
+          print('DEBUG: Found conflict with same origins');
           // Use timestamp comparison for ordering (Y.js YATA rule)
           if (item.id.hlc.physicalTime < conflicting.id.hlc.physicalTime ||
               (item.id.hlc.physicalTime == conflicting.id.hlc.physicalTime &&
@@ -1754,16 +1843,20 @@ class YText extends AbstractType {
                item.id.hlc.logicalCounter == conflicting.id.hlc.logicalCounter &&
                item.id.hlc.nodeId.compareTo(conflicting.id.hlc.nodeId) < 0)) {
             // Our item should come before the conflicting item
+            print('DEBUG: Our item should come before conflicting item');
             right = conflicting;
             break;
           } else {
             // Our item should come after the conflicting item
+            print('DEBUG: Our item should come after conflicting item');
             left = conflicting;
           }
         }
         conflicting = conflicting.right;
       }
     }
+    
+    print('DEBUG: After conflict resolution: left=${left?.id}, right=${right?.id}');
     
     // Set the left and right pointers
     item.left = left;

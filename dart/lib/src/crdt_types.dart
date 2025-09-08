@@ -488,10 +488,7 @@ class Doc {
         case 'YText':
           final ytext = YText();
           doc.share(key, ytext);
-          // Restore YText data - simplified for now
-          if (data is String) {
-            ytext.insert(0, data);
-          }
+          // Don't re-insert text data here - it should come through operations
           break;
         default:
           // For primitive types or unknown types
@@ -632,13 +629,45 @@ class Doc {
   
   /// Apply a delta update containing incremental operations
   void _applyDeltaUpdate(Map<String, dynamic> update) {
-    final operations = update['operations'] as List<dynamic>;
+    final operationsData = update['operations'] as List<dynamic>;
+    
+    // Convert to operation objects and sort by dependency
+    final operations = operationsData.map((opData) => 
+      _Operation.fromJSON(opData as Map<String, dynamic>)).toList();
+    
+    // Sort operations to ensure dependencies are handled correctly:
+    // 1. Share operations first (create containers)
+    // 2. Then content operations (text_insert, map_set, etc.)
+    operations.sort((a, b) {
+      // Share operations have priority 0, others have priority 1
+      int getPriority(String type) {
+        switch (type) {
+          case 'share': return 0;
+          case 'text_insert':
+          case 'text_delete':
+          case 'map_set':
+          case 'map_delete':
+          case 'array_insert':
+          case 'array_delete':
+            return 1;
+          default: return 2;
+        }
+      }
+      
+      final priorityA = getPriority(a.type);
+      final priorityB = getPriority(b.type);
+      
+      if (priorityA != priorityB) {
+        return priorityA.compareTo(priorityB);
+      }
+      
+      // Within same priority, sort by HLC timestamp
+      return a.hlc.compareTo(b.hlc);
+    });
     
     print('DEBUG: Processing ${operations.length} operations');
     
-    for (final opData in operations) {
-      final op = _Operation.fromJSON(opData as Map<String, dynamic>);
-      
+    for (final op in operations) {
       print('DEBUG: Processing operation from ${op.nodeId} with HLC ${op.hlc.physicalTime}');
       
       // Use operation ID for proper deduplication instead of HLC comparison
@@ -732,12 +761,11 @@ class Doc {
               }
             }
             break;
-          case 'YText':
-            value = YText();
-            if (data is String) {
-              (value as YText).insert(0, data);
-            }
-            break;
+        case 'YText':
+          value = YText();
+          // Don't re-insert text data here - it should come through text_insert operations
+          // The share operation just creates the shared type container
+          break;
           case 'GCounter':
             if (data is Map<String, dynamic> && data['state'] != null) {
               final state = data['state'] as Map<String, dynamic>;
@@ -1636,79 +1664,133 @@ class YText extends AbstractType {
     
     print('DEBUG: _applyRemoteInsert called with index=$index, text="$text", originLeft=$originLeft, originRight=$originRight');
     
-    if (index > length) {
-      index = length; // Clamp to valid range
-    }
-    
-    // YATA approach: Find origin items or fall back to position-based insertion
-    Item? leftOriginItem;
-    Item? rightOriginItem;
+    // Find origin items using the provided IDs
+    Item? leftOrigin;
+    Item? rightOrigin;
     
     if (originLeft != null) {
-      leftOriginItem = _findItemById(originLeft);
-      if (leftOriginItem == null) {
-        print('DEBUG: Origin left not found, using position-based insertion');
-      }
+      leftOrigin = _findItemById(originLeft);
     }
     
     if (originRight != null) {
-      rightOriginItem = _findItemById(originRight);
-      if (rightOriginItem == null) {
-        print('DEBUG: Origin right not found, using position-based insertion');
-      }
-    }
-    
-    // If we can't find origins, use position-based insertion
-    Item? currentLeft;
-    Item? currentRight;
-    
-    if (leftOriginItem != null || rightOriginItem != null) {
-      // Use YATA origins if available
-      currentLeft = leftOriginItem;
-      currentRight = rightOriginItem;
-      
-      // If we found left origin but not right, use left's right neighbor
-      if (leftOriginItem != null && rightOriginItem == null) {
-        currentRight = leftOriginItem.right;
-      }
-      // If we found right origin but not left, use right's left neighbor  
-      else if (rightOriginItem != null && leftOriginItem == null) {
-        currentLeft = rightOriginItem.left;
-      }
-    } else {
-      // Fall back to position-based insertion
-      final position = _findPosition(index);
-      currentLeft = position.left;
-      currentRight = position.right;
-      print('DEBUG: Using position-based insertion at index $index');
+      rightOrigin = _findItemById(originRight);
     }
 
-    // Create and integrate items for each character
+    // Create and integrate items for each character using proper YATA
     for (int i = 0; i < text.length; i++) {
       final char = text[i];
       final content = ContentString(char);
+      
+      // Create item with origins (only first char uses original origins)
       final item = Item(
-        createID(remoteHLC.increment()), // Use remote HLC
-        currentLeft,
-        currentLeft?.lastId,
-        (i == 0) ? currentRight : null, // Only first char points to right origin
-        (i == 0) ? currentRight?.id : null,
+        createID(remoteHLC.increment()),
+        null, // Will be set by integrate
+        (i == 0) ? leftOrigin?.lastId ?? leftOrigin?.id : null,
+        null, // Will be set by integrate  
+        (i == 0) ? rightOrigin?.id : null,
         this,
         null,
         content,
       );
 
-      // Direct integration without transaction to avoid recursion
-      _integrateItemDirectly(item);
+      // Integrate using YATA algorithm
+      _integrateItem(item, leftOrigin, rightOrigin);
       
-      // Update pointers for next character
-      currentLeft = item;
-      currentRight = null; // Clear right origin for subsequent chars
+      // For subsequent characters in same insertion, the previous character becomes left origin
+      if (i == 0) {
+        leftOrigin = item;
+        rightOrigin = null; // Clear right origin for subsequent chars
+      } else {
+        leftOrigin = item;
+      }
     }
     
     print('DEBUG: After _applyRemoteInsert, text is now: "${toString()}"');
   }
   
+  /// Integrate an item using YATA algorithm (based on Y.js)
+  void _integrateItem(Item item, Item? leftOrigin, Item? rightOrigin) {
+    // Find the position where this item should be inserted
+    Item? left = leftOrigin;
+    Item? right = rightOrigin;
+    
+    // If we have left origin, start from its right neighbor
+    if (left != null) {
+      right = left.right;
+    }
+    // If no left origin but we have right origin, find the leftmost item
+    else if (right != null) {
+      left = null;
+      // Find leftmost item by traversing left until we find null
+      Item? current = right;
+      while (current?.left != null) {
+        current = current!.left;
+      }
+      if (current != right) {
+        left = current?.left;
+      }
+    }
+    // If we have neither origin, insert at the beginning or end based on context
+    else {
+      left = null;
+      right = _start;
+    }
+    
+    // Now we need to resolve conflicts using YATA algorithm
+    // This is a simplified version - full Y.js has more complex conflict resolution
+    if (left != null && right != null) {
+      // Check for conflicts - if there are items between left and right that
+      // have the same origins as us, we need to resolve based on timestamp
+      Item? conflicting = left.right;
+      
+      while (conflicting != null && conflicting != right) {
+        // If this conflicting item has same origins as our item
+        if (_hasSameOrigins(item, conflicting)) {
+          // Use timestamp comparison for ordering (Y.js YATA rule)
+          if (item.id.hlc.physicalTime < conflicting.id.hlc.physicalTime ||
+              (item.id.hlc.physicalTime == conflicting.id.hlc.physicalTime &&
+               item.id.hlc.logicalCounter < conflicting.id.hlc.logicalCounter) ||
+              (item.id.hlc.physicalTime == conflicting.id.hlc.physicalTime &&
+               item.id.hlc.logicalCounter == conflicting.id.hlc.logicalCounter &&
+               item.id.hlc.nodeId.compareTo(conflicting.id.hlc.nodeId) < 0)) {
+            // Our item should come before the conflicting item
+            right = conflicting;
+            break;
+          } else {
+            // Our item should come after the conflicting item
+            left = conflicting;
+          }
+        }
+        conflicting = conflicting.right;
+      }
+    }
+    
+    // Set the left and right pointers
+    item.left = left;
+    item.right = right;
+    
+    // Update the linked list structure
+    if (left != null) {
+      left.right = item;
+    } else {
+      _start = item; // This is the new start
+    }
+    
+    if (right != null) {
+      right.left = item;
+    }
+    
+    // Update origins based on final position
+    item.origin = left?.lastId ?? left?.id;
+    item.rightOrigin = right?.id;
+    
+    print('DEBUG: Integrated item "${(item.content as ContentString).str}" between left=${left?.id} and right=${right?.id}');
+  }
+  
+  /// Check if two items have the same origins (for YATA conflict resolution)
+  bool _hasSameOrigins(Item item1, Item item2) {
+    return item1.origin == item2.origin && item1.rightOrigin == item2.rightOrigin;
+  }
   /// Find item by its ID string representation
   Item? _findItemById(String idString) {
     // Parse the ID string to extract HLC components
@@ -1729,15 +1811,22 @@ class YText extends AbstractType {
       nodeId: nodeId,
     );
     
+    // Search through all items for matching ID
+    return _findItemByHLC(targetHLC);
+  }
+  
+  /// Find item by HLC timestamp
+  Item? _findItemByHLC(HLC targetHLC) {
     Item? current = _start;
     while (current != null) {
-      if (current.id.hlc == targetHLC) {
+      if (current.id.hlc.physicalTime == targetHLC.physicalTime &&
+          current.id.hlc.logicalCounter == targetHLC.logicalCounter &&
+          current.id.hlc.nodeId == targetHLC.nodeId) {
         return current;
       }
       current = current.right;
     }
     
-    print('DEBUG: Could not find item with ID: $idString');
     return null;
   }
   
@@ -1768,30 +1857,6 @@ class YText extends AbstractType {
         currentIndex = itemEnd;
       }
       current = current.right;
-    }
-  }
-  
-  /// Direct integration without transaction (used during sync)
-  void _integrateItemDirectly(Item item) {
-    // Simplified integration for remote operations
-    if (item.left != null) {
-      item.right = item.left!.right;
-      item.left!.right = item;
-      if (item.right != null) {
-        item.right!.left = item;
-      }
-    } else {
-      // Insert at start
-      item.right = _start;
-      _start = item;
-      if (item.right != null) {
-        item.right!.left = item;
-      }
-    }
-
-    // Update length
-    if (item.countable && !item.deleted) {
-      _length += item.length;
     }
   }
 }

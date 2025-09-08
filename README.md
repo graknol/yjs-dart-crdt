@@ -7,6 +7,7 @@ A comprehensive CRDT (Conflict-free Replicated Data Type) library inspired by Y.
 This repository contains compatible implementations of Y.js core CRDT data structures in:
 - **[Dart](dart/)** - Pure Dart implementation for Flutter clients and mobile apps
 - **[C#](csharp/)** - .NET Standard implementation optimized for server environments
+- **[JavaScript-to-Dart Transpiler](js-to-dart-transpiler/)** - **NEW**: Tool to directly convert Y.js source code to Dart
 
 Both implementations share the same protocol, enabling seamless synchronization between Dart clients and C# servers with features like Hybrid Logical Clocks (HLC) for advanced causality tracking.
 
@@ -34,6 +35,11 @@ yjs-dart-crdt/
 │   ├── YjsCrdtSharp.Examples/     # C# examples
 │   ├── YjsCrdtSharp.Tests/        # C# unit tests
 │   └── README.md                   # C#-specific documentation
+├── js-to-dart-transpiler/         # **NEW**: JavaScript to Dart transpiler
+│   ├── lib/                       # Transpiler source code
+│   ├── bin/                       # CLI transpiler tool
+│   ├── example/                   # Transpiler examples
+│   └── README.md                  # Transpiler documentation
 ├── CSHARP_TECHNICAL_SPEC.md       # Comprehensive C# implementation guide
 └── README.md                       # This file
 ```
@@ -90,6 +96,49 @@ map.Set("progress", progress);
 
 Console.WriteLine($"Progress: {progress.Value}%");
 ```
+
+### JavaScript-to-Dart Transpiler (**NEW Approach**)
+
+Instead of reimplementing Y.js algorithms from scratch, directly transpile the mature Y.js source code to Dart:
+
+```bash
+cd js-to-dart-transpiler/
+dart pub get
+dart run bin/transpiler.dart -i yjs_source.js -o output.dart
+```
+
+**Benefits:**
+- ✅ **Leverage Y.js maturity**: Get battle-tested YATA algorithm, conflict resolution, and optimizations
+- ✅ **Faster development**: Convert months of implementation work to weeks  
+- ✅ **Automatic updates**: Transpile newer Y.js versions to stay current
+- ✅ **Algorithm preservation**: Core CRDT logic stays identical to Y.js
+
+**Example transpilation:**
+```javascript
+// Y.js source
+export class YText {
+  constructor() {
+    this._content = new Map();
+  }
+  insert(index, text) {
+    // YATA algorithm implementation...
+  }
+}
+```
+
+```dart
+// Generated Dart
+class YText {
+  YText() {
+    this._content = <String, dynamic>{};
+  }
+  void insert(int index, String text) {
+    // YATA algorithm implementation... (preserved exactly)
+  }
+}
+```
+
+Only platform-specific functions (crypto, file I/O, etc.) need manual implementation - the complex CRDT algorithms are preserved automatically!
 
 ## 🌐 Client-Server Synchronization
 

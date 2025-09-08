@@ -1,0 +1,18 @@
+# Dart
+.dart_tool/
+.packages
+build/
+pubspec.lock
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+/tmp/
+*.log

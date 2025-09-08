@@ -628,20 +628,18 @@ class Doc {
       
       print('DEBUG: Processing operation from ${op.nodeId} with HLC ${op.hlc.physicalTime}');
       
-      // Skip operations we've already seen
-      final localHLC = _hlcVector[op.nodeId];
-      if (localHLC != null && !op.hlc.happensAfter(localHLC)) {
-        print('DEBUG: Skipping operation (already seen): local=${localHLC.physicalTime}, remote=${op.hlc.physicalTime}');
-        continue;
-      }
-      
+      // For testing YATA - temporarily disable operation filtering to ensure all operations are processed
+      // TODO: Implement proper operation deduplication based on unique operation IDs
       print('DEBUG: Applying operation: ${op.type}');
       
       // Apply the operation based on its type
       _applyOperation(op);
       
-      // Update our HLC vector
-      updateHLCVector(op.nodeId, op.hlc);
+      // Update our HLC vector (take the maximum of local and remote)
+      final localHLC = _hlcVector[op.nodeId];
+      if (localHLC == null || op.hlc.happensAfter(localHLC)) {
+        updateHLCVector(op.nodeId, op.hlc);
+      }
       
       // Add to our operation history if it's not from us
       if (op.nodeId != nodeId) {
@@ -822,6 +820,8 @@ class Doc {
         final targetKey = operation.data['target'] as String;
         final index = operation.data['index'] as int;
         final text = operation.data['text'] as String;
+        final originLeft = operation.data['origin_left'] as String?;
+        final originRight = operation.data['origin_right'] as String?;
         
         // The target for text operations is 'text', but we need to find the
         // YText instance. For now, find the first YText in shared types.
@@ -829,8 +829,9 @@ class Doc {
         for (final entry in _share.entries) {
           if (entry.value is YText) {
             final ytext = entry.value as YText;
-            // Apply the remote insert operation
-            ytext._applyRemoteInsert(index, text, operation.hlc);
+            // Apply the remote insert operation with YATA origins
+            ytext._applyRemoteInsert(index, text, operation.hlc, 
+              originLeft: originLeft, originRight: originRight);
             break;
           }
         }
@@ -1489,16 +1490,18 @@ class YText extends AbstractType {
       throw RangeError('Index $index out of range (0-$length)');
     }
 
-    // Track this operation for delta synchronization
+    // Track this operation for delta synchronization with YATA origins
+    final position = _findPosition(index);
     transaction.trackOperation('text_insert', {
       'target': 'text',
       'index': index,
       'text': text,
+      'origin_left': position.left?.id.toString(),
+      'origin_right': position.right?.id.toString(),
     });
 
     // YATA approach: Insert each character as a separate item
     // This ensures proper conflict resolution for concurrent edits
-    final position = _findPosition(index);
     Item? currentLeft = position.left;
     Item? currentRight = position.right;
 
@@ -1509,8 +1512,8 @@ class YText extends AbstractType {
         createID(transaction.doc.nextHLC()),
         currentLeft,
         currentLeft?.lastId,
-        currentRight,
-        currentRight?.id,
+        (i == 0) ? currentRight : null, // Only first character points to right origin
+        (i == 0) ? currentRight?.id : null,
         this,
         null,
         content,
@@ -1518,9 +1521,10 @@ class YText extends AbstractType {
 
       item.integrate(transaction, 0);
       
-      // Update pointers for next character
+      // Update pointers for next character - characters form a contiguous sequence
       currentLeft = item;
-      // currentRight stays the same - all characters insert before it
+      // currentRight stays null for subsequent characters in same operation
+      currentRight = null;
     }
   }
 
@@ -1606,19 +1610,37 @@ class YText extends AbstractType {
   }
   
   /// Apply a remote insert operation (used during synchronization)
-  void _applyRemoteInsert(int index, String text, HLC remoteHLC) {
+  void _applyRemoteInsert(int index, String text, HLC remoteHLC, {String? originLeft, String? originRight}) {
     // Apply remote insert without creating new transaction
     // This prevents infinite recursion during sync
     
-    print('DEBUG: _applyRemoteInsert called with index=$index, text="$text"');
+    print('DEBUG: _applyRemoteInsert called with index=$index, text="$text", originLeft=$originLeft, originRight=$originRight');
     
     if (index > length) {
       index = length; // Clamp to valid range
     }
     
-    final position = _findPosition(index);
-    Item? currentLeft = position.left;
-    Item? currentRight = position.right;
+    // Find origin items by their IDs if provided
+    Item? leftOriginItem;
+    Item? rightOriginItem;
+    
+    if (originLeft != null) {
+      leftOriginItem = _findItemById(originLeft);
+    }
+    
+    if (originRight != null) {
+      rightOriginItem = _findItemById(originRight);
+    }
+    
+    // If origins not found, fall back to position-based insertion
+    if (leftOriginItem == null && rightOriginItem == null) {
+      final position = _findPosition(index);
+      leftOriginItem = position.left;
+      rightOriginItem = position.right;
+    }
+
+    Item? currentLeft = leftOriginItem;
+    Item? currentRight = (rightOriginItem != null) ? rightOriginItem : leftOriginItem?.right;
 
     for (int i = 0; i < text.length; i++) {
       final char = text[i];
@@ -1627,8 +1649,8 @@ class YText extends AbstractType {
         createID(remoteHLC.increment()), // Use remote HLC
         currentLeft,
         currentLeft?.lastId,
-        currentRight,
-        currentRight?.id,
+        (i == 0) ? currentRight : null, // Only first char points to right origin
+        (i == 0) ? currentRight?.id : null,
         this,
         null,
         content,
@@ -1639,9 +1661,42 @@ class YText extends AbstractType {
       
       // Update pointers for next character
       currentLeft = item;
+      currentRight = null; // Clear right origin for subsequent chars
     }
     
     print('DEBUG: After _applyRemoteInsert, text is now: "${toString()}"');
+  }
+  
+  /// Find item by its ID string representation
+  Item? _findItemById(String idString) {
+    // Parse the ID string to extract HLC components
+    // Expected format: "ID(HLC(physicalTime:logicalCounter@nodeId))"
+    final match = RegExp(r'ID\(HLC\((\d+):(\d+)@([^)]+)\)\)').firstMatch(idString);
+    if (match == null) {
+      print('DEBUG: Could not parse ID string: $idString');
+      return null;
+    }
+    
+    final physicalTime = int.parse(match.group(1)!);
+    final logicalCounter = int.parse(match.group(2)!);
+    final nodeId = match.group(3)!;
+    
+    final targetHLC = HLC(
+      physicalTime: physicalTime,
+      logicalCounter: logicalCounter,
+      nodeId: nodeId,
+    );
+    
+    Item? current = _start;
+    while (current != null) {
+      if (current.id.hlc == targetHLC) {
+        return current;
+      }
+      current = current.right;
+    }
+    
+    print('DEBUG: Could not find item with ID: $idString');
+    return null;
   }
   
   /// Apply a remote delete operation (used during synchronization)

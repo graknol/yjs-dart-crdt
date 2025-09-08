@@ -1,11 +1,11 @@
 /// Polyfill for JavaScript functions and APIs used in transpiled Y.js code
 /// This file provides Dart implementations or placeholders for JavaScript-specific functionality
 /// 
-/// Updated to use actual repository implementations where available instead of placeholders
+/// Updated to use transpiled Y.js implementations instead of old Dart implementations
 /// 
-/// IMPORTANT: Some transpiled files should be IGNORED in favor of repository implementations:
-/// - transpiled_yjs/utils/ID.dart -> Use dart/lib/src/id.dart instead
-/// - transpiled_yjs/utils/encoding.dart -> Use dart/lib/src/encoding.dart instead
+/// IMPORTANT: This polyfill now uses transpiled Y.js files to preserve Y.js algorithms:
+/// - Uses transpiled_yjs/utils/ID.dart for proper Y.js ID handling
+/// - Uses transpiled Y.js implementations instead of dart/lib/src/ files
 /// 
 /// Author: Transpiled from Y.js with polyfill layer
 library polyfill;
@@ -15,11 +15,8 @@ import 'dart:convert';
 import 'dart:math' as dartMath;
 import 'dart:typed_data';
 
-// Import actual implementations from the repository
-import '../dart/lib/src/id.dart' as dartId;
-import '../dart/lib/src/encoding.dart' as dartEncoding;
-import '../dart/lib/src/crdt_types.dart' as dartCrdt;
-import '../dart/lib/src/counters.dart' as dartCounters;
+// Import transpiled Y.js implementations
+import 'utils/ID.dart' as transpiledId;
 
 // =============================================================================
 // TIMER FUNCTIONS
@@ -122,25 +119,24 @@ List<T> createArray<T>() {
 // Y.JS SPECIFIC ID AND STRUCTURE CREATORS
 // =============================================================================
 
-/// Create ID structure - using actual repository implementation
-/// NOTE: The transpiled Y.js ID.dart file should NOT be used since we have a real implementation
+/// Create ID structure - using transpiled Y.js implementation  
 dynamic createID(dynamic client, dynamic clock) {
-  // Use the actual ID implementation from the repository
+  // Use the transpiled Y.js ID implementation instead of the old Dart one
   if (client is int && clock is int) {
-    return dartId.createIDLegacy(client, clock);
+    return transpiledId.createID(client, clock);
   }
   // Fallback for dynamic types
-  return dartId.createIDLegacy(client as int, clock as int);
+  return transpiledId.createID(client as int, clock as int);
 }
 
-/// Compare IDs - using actual repository implementation
-bool compareIDs(dynamic a, dynamic b) {
-  // Use the actual compareIDs implementation from the repository
-  return dartId.compareIDs(a as dartId.ID?, b as dartId.ID?);
+/// Compare IDs - using transpiled Y.js implementation
+int compareIDs(dynamic a, dynamic b) {
+  // Use the transpiled Y.js compareIDs implementation
+  return transpiledId.compareIDs(a as transpiledId.ID?, b as transpiledId.ID?);
 }
 
-/// Access to the real ID class from the repository
-typedef ID = dartId.ID;
+/// Access to the transpiled Y.js ID class
+typedef ID = transpiledId.ID;
 
 /// Create IdSet structure - using repository-compatible implementation
 dynamic createIdSet() {
@@ -764,8 +760,8 @@ final dynamic IdMap = () => createIdMap();
 /// TODO: IMPLEMENTATION CHECKLIST
 /// 
 /// Priority 1 (Core CRDT functionality):
-/// - [x] Implement proper ID structure with client/clock (using dartId.createIDLegacy)
-/// - [x] Implement ID comparison (using dartId.compareIDs) 
+/// - [x] Implement proper ID structure with client/clock (using transpiled Y.js ID)
+/// - [x] Implement ID comparison (using transpiled Y.js compareIDs) 
 /// - [x] Replace Math operations with direct dart:math usage
 /// - [x] Replace Array operations with native Dart List methods
 /// - [x] Implement IdSet with proper set operations and binary search

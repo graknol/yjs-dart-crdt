@@ -1,0 +1,15 @@
+{
+  "name": "yjs-dart-compatibility-test",
+  "version": "1.0.0",
+  "description": "Tests compatibility between Y.js and Dart CRDT implementations",
+  "main": "test_yjs_dart_compatibility.js",
+  "scripts": {
+    "test": "node test_yjs_dart_compatibility.js",
+    "install-yjs": "npm install yjs"
+  },
+  "dependencies": {
+    "yjs": "^13.6.10"
+  },
+  "author": "GitHub Copilot",
+  "license": "MIT"
+}

@@ -9,13 +9,14 @@ class _Operation {
   final HLC hlc;
   final String type;
   final Map<String, dynamic> data;
+  final String operationId; // Unique identifier for operation deduplication
 
   _Operation({
     required this.nodeId,
     required this.hlc,
     required this.type,
     required this.data,
-  });
+  }) : operationId = '${hlc.nodeId}:${hlc.physicalTime}:${hlc.logicalCounter}:$type';
 
   Map<String, dynamic> toJSON() {
     return {
@@ -23,16 +24,22 @@ class _Operation {
       'hlc': hlc.toJson(),
       'type': type,
       'data': data,
+      'operationId': operationId,
     };
   }
 
   static _Operation fromJSON(Map<String, dynamic> json) {
-    return _Operation(
+    final op = _Operation(
       nodeId: json['nodeId'] as String,
       hlc: HLC.fromJson(json['hlc'] as Map<String, dynamic>),
       type: json['type'] as String,
       data: json['data'] as Map<String, dynamic>,
     );
+    // Handle legacy operations without operationId
+    if (json.containsKey('operationId')) {
+      return op; // operationId will be generated in constructor
+    }
+    return op;
   }
 }
 
@@ -241,8 +248,14 @@ class Doc {
   /// HLC state representing the known state from each node
   final Map<String, HLC> _hlcVector = {};
   
-  /// Operation history for delta synchronization
+  /// Track processed operation IDs to prevent duplicates
+  final Set<String> _processedOperations = {};
+  
+  /// Operation history for delta synchronization  
   final List<_Operation> _operationHistory = [];
+  
+  /// Get operation history for testing
+  List<_Operation> get operationHistory => List.unmodifiable(_operationHistory);
   
   /// Maximum number of operations to keep in history
   static const int _maxHistorySize = 1000;
@@ -628,9 +641,16 @@ class Doc {
       
       print('DEBUG: Processing operation from ${op.nodeId} with HLC ${op.hlc.physicalTime}');
       
-      // For testing YATA - temporarily disable operation filtering to ensure all operations are processed
-      // TODO: Implement proper operation deduplication based on unique operation IDs
+      // Use operation ID for proper deduplication instead of HLC comparison
+      if (_processedOperations.contains(op.operationId)) {
+        print('DEBUG: Skipping operation (already processed): ${op.operationId}');
+        continue;
+      }
+      
       print('DEBUG: Applying operation: ${op.type}');
+      
+      // Mark operation as processed
+      _processedOperations.add(op.operationId);
       
       // Apply the operation based on its type
       _applyOperation(op);
@@ -1620,28 +1640,50 @@ class YText extends AbstractType {
       index = length; // Clamp to valid range
     }
     
-    // Find origin items by their IDs if provided
+    // YATA approach: Find origin items or fall back to position-based insertion
     Item? leftOriginItem;
     Item? rightOriginItem;
     
     if (originLeft != null) {
       leftOriginItem = _findItemById(originLeft);
+      if (leftOriginItem == null) {
+        print('DEBUG: Origin left not found, using position-based insertion');
+      }
     }
     
     if (originRight != null) {
       rightOriginItem = _findItemById(originRight);
+      if (rightOriginItem == null) {
+        print('DEBUG: Origin right not found, using position-based insertion');
+      }
     }
     
-    // If origins not found, fall back to position-based insertion
-    if (leftOriginItem == null && rightOriginItem == null) {
+    // If we can't find origins, use position-based insertion
+    Item? currentLeft;
+    Item? currentRight;
+    
+    if (leftOriginItem != null || rightOriginItem != null) {
+      // Use YATA origins if available
+      currentLeft = leftOriginItem;
+      currentRight = rightOriginItem;
+      
+      // If we found left origin but not right, use left's right neighbor
+      if (leftOriginItem != null && rightOriginItem == null) {
+        currentRight = leftOriginItem.right;
+      }
+      // If we found right origin but not left, use right's left neighbor  
+      else if (rightOriginItem != null && leftOriginItem == null) {
+        currentLeft = rightOriginItem.left;
+      }
+    } else {
+      // Fall back to position-based insertion
       final position = _findPosition(index);
-      leftOriginItem = position.left;
-      rightOriginItem = position.right;
+      currentLeft = position.left;
+      currentRight = position.right;
+      print('DEBUG: Using position-based insertion at index $index');
     }
 
-    Item? currentLeft = leftOriginItem;
-    Item? currentRight = (rightOriginItem != null) ? rightOriginItem : leftOriginItem?.right;
-
+    // Create and integrate items for each character
     for (int i = 0; i < text.length; i++) {
       final char = text[i];
       final content = ContentString(char);

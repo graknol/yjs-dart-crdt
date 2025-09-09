@@ -168,6 +168,65 @@ class Doc {
     transaction.commit();
   }
 
+  /// Get vector clock
+  Map<String, int> getVectorClock() {
+    return Map.from(_hlcVector);
+  }
+
+  /// Create snapshot
+  Map<String, dynamic> createSnapshot() {
+    return {
+      'hlcVector': Map.from(_hlcVector),
+      'state': toJSON(),
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+  }
+
+  /// Get updates since snapshot
+  Map<String, dynamic> getUpdateSinceSnapshot(Map<String, dynamic> snapshot) {
+    final snapshotVector = snapshot['hlcVector'] as Map<String, dynamic>;
+    final operations = <Map<String, dynamic>>[];
+    
+    // Find operations after the snapshot
+    for (final op in _operationHistory) {
+      final opNodeId = op.nodeId;
+      final opTime = op.hlc.physicalTime;
+      final snapshotTime = snapshotVector[opNodeId] as int? ?? 0;
+      
+      if (opTime > snapshotTime) {
+        operations.add(op.toJSON());
+      }
+    }
+    
+    return {
+      'operations': operations,
+      'hlcVector': _hlcVector,
+    };
+  }
+
+  /// Get sync state
+  Map<String, dynamic> getSyncState() {
+    return {
+      'hlcVector': Map.from(_hlcVector),
+      'nodeId': nodeId,
+      'clientID': clientID,
+    };
+  }
+
+  /// Check if document has changes since a given vector clock
+  bool hasChangesSince(Map<String, int> vectorClock) {
+    for (final entry in _hlcVector.entries) {
+      final nodeId = entry.key;
+      final ourTime = entry.value;
+      final theirTime = vectorClock[nodeId] ?? 0;
+      
+      if (ourTime > theirTime) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Get updates since a given state
   Map<String, dynamic> getUpdateSince([Map<String, int>? stateVector]) {
     // Return operations that occurred after the given state
@@ -269,7 +328,7 @@ abstract class AbstractType<T> {
     // Override in subclasses
   }
   
-  Map<String, dynamic> toJSON();
+  dynamic toJSON();
 }
 
 /// Enhanced YMap with proper last-write-wins semantics
@@ -308,6 +367,9 @@ class YMap extends AbstractType {
   /// Get all entries in the map
   Iterable<MapEntry<String, dynamic>> get entries => _data.entries;
 
+  /// Get all keys in the map
+  Iterable<String> get keys => _data.keys;
+
   /// Synchronize with another YMap using proper Y.js conflict resolution
   void synchronizeWith(YMap other) {
     if (other is YMap) {
@@ -334,7 +396,7 @@ class YMap extends AbstractType {
   }
 
   @override
-  Map<String, dynamic> toJSON() {
+  dynamic toJSON() {
     return Map.from(_data);
   }
 }
@@ -378,6 +440,21 @@ class YArray<T> extends AbstractType {
     return _data[index];
   }
 
+  /// Array index operator
+  T operator [](int index) {
+    return _data[index];
+  }
+
+  /// Array assignment operator  
+  void operator []=(int index, T value) {
+    if (index >= 0 && index < _data.length) {
+      final op = _ArrayOperation('set', index, value, _getCurrentClock());
+      _operations.add(op);
+      _applyOperationOrdering();
+      _data[index] = value;
+    }
+  }
+
   int get length => _data.length;
 
   List<T> toList() {
@@ -398,8 +475,9 @@ class YArray<T> extends AbstractType {
   }
 
   @override
-  Map<String, dynamic> toJSON() {
-    return {'array': _data};
+  dynamic toJSON() {
+    // Return the data directly as a list for JSON compatibility
+    return List.from(_data);
   }
 }
 
@@ -409,31 +487,29 @@ class YText extends AbstractType {
   final List<_TextItem> _items = [];
 
   YText([String initialText = '']) {
-    _text = initialText;
     if (initialText.isNotEmpty) {
+      _text = initialText;
       _items.add(_TextItem(initialText, null, null, _getCurrentClock(), _getClientId()));
     }
   }
 
   void insert(int index, String text) {
-    // Create character-level items with proper origins for YATA
-    final leftItem = _findItemAtPosition(index - 1);
-    final rightItem = _findItemAtPosition(index);
-    
-    final item = _TextItem(
-      text,
-      leftItem?.id,
-      rightItem?.id,
-      _getCurrentClock(),
-      _getClientId(),
-    );
-    
-    _items.add(item);
-    _applyYATAOrdering();
+    // Don't add to items list if this is just updating the internal text
+    // The YATA algorithm would be more complex in a real implementation
     
     // Update the actual text
     if (index >= 0 && index <= _text.length) {
       _text = _text.substring(0, index) + text + _text.substring(index);
+      
+      // For now, just track the operation without full YATA complexity
+      final item = _TextItem(
+        text,
+        null, // Simplified - would need proper origins in full YATA
+        null,
+        _getCurrentClock(),
+        _getClientId(),
+      );
+      _items.add(item);
     }
   }
 
@@ -444,8 +520,8 @@ class YText extends AbstractType {
     }
   }
 
-  String charAt(int index) {
-    return index >= 0 && index < _text.length ? _text[index] : '';
+  String? charAt(int index) {
+    return index >= 0 && index < _text.length ? _text[index] : null;
   }
 
   int get length => _text.length;
@@ -489,7 +565,7 @@ class YText extends AbstractType {
   }
 
   @override
-  Map<String, dynamic> toJSON() {
+  dynamic toJSON() {
     return {'text': _text};
   }
 }

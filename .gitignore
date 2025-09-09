@@ -27,3 +27,32 @@ doc/api/
 
 .flutter-plugins
 .flutter-plugins-dependencies
+
+# .NET / C# specific
+**/bin/
+**/obj/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+*.cache
+*.swp
+*.tmp
+*.log
+**/packages/
+**/TestResults/
+**/.vs/
+**/debug/
+**/release/
+**/x64/
+**/x86/
+**/.vscode/
+**/*.DotSettings
+**/.idea/
+*.nupkg
+
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>9.0</LangVersion>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>YjsCrdtSharp</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>YjsCRDT Contributors</Authors>
+    <Description>Pure C# implementation of Y.js CRDT data structures for offline-first applications</Description>
+    <PackageTags>crdt;yjs;collaboration;offline-first;synchronization</PackageTags>
+    <RepositoryUrl>https://github.com/graknol/yjs-dart-crdt</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="6.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="YjsCrdtSharp\YjsCrdtSharp.csproj" />
+    <ProjectReference Include="YjsCrdtSharp.Examples\YjsCrdtSharp.Examples.csproj" />
+    <ProjectReference Include="YjsCrdtSharp.Tests\YjsCrdtSharp.Tests.csproj" />
+  </ItemGroup>
+</Project>

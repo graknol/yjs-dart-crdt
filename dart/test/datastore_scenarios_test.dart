@@ -127,7 +127,7 @@ void main() {
       expect(finalClientMap.get('server3_change'), equals('data3'));
       
       // The HLC vector should reflect operations from all nodes
-      final clientHLCVector = client.getHLCVector();
+      final clientHLCVector = client.getVectorClock();
       expect(clientHLCVector.keys, containsAll(['client-1', 'server-2', 'server-3']));
       
       // Key insight: Each server only needs to track operations they've generated
@@ -181,7 +181,7 @@ void main() {
       
       // Now client's HLC vector includes knowledge of both servers
       final clientFinalState = client.getVectorClock();
-      final clientHLCVector = client.getHLCVector();
+      final clientHLCVector = client.getVectorClock();
       
       // ServerA doesn't know about serverB's operations
       // When client requests from serverA using their complete state,
@@ -248,7 +248,7 @@ void main() {
       
       // The HLC system correctly handles the concurrent operations
       // through the per-node tracking mechanism
-      final clientHLCVector = client.getHLCVector();
+      final clientHLCVector = client.getVectorClock();
       expect(clientHLCVector.keys, containsAll(['client-1', 'server-1', 'server-2']));
     });
 

@@ -116,8 +116,10 @@ class Doc {
     this._hlcVector[this.nodeId] = _currentHLC.physicalTime;
   }
 
+  static int _clientIDCounter = 0;
+  
   static int _generateClientID() {
-    return DateTime.now().millisecondsSinceEpoch % 1000000;
+    return DateTime.now().millisecondsSinceEpoch + (++_clientIDCounter);
   }
 
   /// Share a CRDT type with the document
@@ -335,18 +337,28 @@ abstract class AbstractType<T> {
 class YMap extends AbstractType {
   final Map<String, dynamic> _data = {};
   final Map<String, _MapOperation> _operations = {};
+  Doc? _doc;
 
   @override
   void set<T>(String key, T value) {
-    // Track operation with HLC timestamp for conflict resolution
-    final op = _MapOperation(key, value, _getCurrentHLC(), _getClientId());
+    // Use document's HLC if integrated, otherwise create a simple timestamp
+    final hlc = _doc?.nodeId != null 
+        ? _HLC(DateTime.now().microsecondsSinceEpoch, _doc!._currentHLC.logicalCounter, _doc!.nodeId)
+        : _HLC(DateTime.now().microsecondsSinceEpoch, 0, _getClientId());
+    
+    final op = _MapOperation(key, value, hlc, _getClientId());
     
     // Apply last-write-wins conflict resolution
     final existing = _operations[key];
-    if (existing == null || op.hlc.compareTo(existing.hlc) > 0) {
+    if (existing == null || op.hlc.compareTo(existing.hlc) >= 0) {
       _operations[key] = op;
       _data[key] = value;
     }
+  }
+
+  /// Integration with document for proper HLC tracking  
+  void _integrate(Doc doc) {
+    _doc = doc;
   }
 
   T? get<T>(String key) {
@@ -388,11 +400,11 @@ class YMap extends AbstractType {
   }
 
   _HLC _getCurrentHLC() {
-    return _HLC(DateTime.now().millisecondsSinceEpoch, 0, _getClientId());
+    return _HLC(DateTime.now().microsecondsSinceEpoch, 0, _getClientId());
   }
 
   String _getClientId() {
-    return 'client-${hashCode}';
+    return _doc?.nodeId ?? 'client-${DateTime.now().microsecondsSinceEpoch}-${hashCode}';
   }
 
   @override

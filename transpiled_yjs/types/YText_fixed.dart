@@ -131,34 +131,31 @@ class YText {
     final clientId = _getClientId();
     final clock = _getNextClock();
     
-    // Create content for each character (YATA requirement)
-    for (int i = 0; i < text.length; i++) {
-      final char = text[i];
-      final charId = createID(clientId, clock + i);
-      
-      // YATA: Find correct position considering concurrent operations
-      final left = pos.left;
-      final right = pos.right;
-      
-      // Create new Item with YATA origins
-      final item = Item(
-        id: charId,
-        left: left,
-        origin: left?.id, // Origin left for YATA
-        right: right,
-        rightOrigin: right?.id, // Origin right for YATA  
-        parent: this,
-        parentSub: null,
-        content: ContentString(char),
-      );
-      
-      // Integrate using YATA algorithm
-      _integrateItem(item);
-      
-      // Update position for next character
-      pos.left = item;
-      pos.index++;
-    }
+    // Y.js OPTIMIZATION: Create single Item for entire text block (not per character)
+    final textId = createID(clientId, clock);
+    
+    // YATA: Find correct position considering concurrent operations
+    final left = pos.left;
+    final right = pos.right;
+    
+    // Create single Item with entire text content (Y.js optimization)
+    final item = Item(
+      id: textId,
+      left: left,
+      origin: left?.id, // Origin left for YATA
+      right: right,
+      rightOrigin: right?.id, // Origin right for YATA  
+      parent: this,
+      parentSub: null,
+      content: ContentString(text), // ENTIRE TEXT, not per character
+    );
+    
+    // Integrate using YATA algorithm
+    _integrateItem(item);
+    
+    // Update position for entire text block
+    pos.left = item;
+    pos.index += text.length;
   }
   
   /// Integrate Item using YATA conflict resolution
